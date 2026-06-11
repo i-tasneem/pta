@@ -73,7 +73,7 @@ class DhanProvider extends MarketDataProvider {
       this.startHeartbeat();
       resolve();
     });
-  }
+  }}
 
   handleWsMessage(data) {
     // Dhan binary protocol parsing
