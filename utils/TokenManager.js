@@ -72,5 +72,24 @@ class TokenManager {
   }
   // ... rest unchanged
 }
+async getToken() {
+  if (!this.isTokenValid()) {
+    await this.generateToken();
+  }
+  return this.currentToken;
+}
 
+isTokenValid() {
+  return (
+    this.currentToken &&
+    this.expiryTime &&
+    this.expiryTime.getTime() > Date.now() + 5 * 60 * 1000
+  );
+}
+
+stop() {
+  if (this.refreshInterval) {
+    clearInterval(this.refreshInterval);
+  }
+}
 module.exports = TokenManager;

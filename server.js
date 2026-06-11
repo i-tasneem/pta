@@ -60,7 +60,7 @@ class PTAServer {
   totpSecret: config.provider.totpSecret
 }, this.eventBus.client);
       await this.tokenManager.initialize();
-      config.provider.accessToken = this.tokenManager.getToken();
+      config.provider.accessToken = await this.tokenManager.getToken();
       console.log('✓ Dhan token generated via TOTP');
     } else if (process.env.USE_MOCK !== 'true' && !config.provider.accessToken) {
       console.warn('⚠ No Dhan access token or TOTP secret configured. Set DHAN_ACCESS_TOKEN or DHAN_TOTP_SECRET env var.');
@@ -101,7 +101,7 @@ class PTAServer {
     if (this.tokenManager && !this.tokenManager.isTokenValid()) {
       console.log('Token near expiry, refreshing before connect...');
       await this.tokenManager.generateToken();
-      this.provider.accessToken = this.tokenManager.getToken();
+      this.provider.accessToken = await this.tokenManager.getToken();
     }
 
     await this.provider.connect();
