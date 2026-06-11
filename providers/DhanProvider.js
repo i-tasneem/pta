@@ -267,10 +267,11 @@ class DhanProvider extends MarketDataProvider {
 
     const url = `${this.restUrl}${endpoint}`;
     const headers = {
-      'Authorization': `Bearer ${this.accessToken}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json'
-    };
+			'access-token': this.accessToken,
+			'client-id': this.clientId,
+			'Content-Type': 'application/json',
+			'Accept': 'application/json'
+				};
 
     const options = { method, url, headers };
     if (body) options.data = body;

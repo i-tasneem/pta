@@ -30,11 +30,18 @@ class TokenManager {
         { params: { dhanClientId: this.clientId, pin: this.pin, totp: otp } }
       );
 
-      this.currentToken = response.data.accessToken;
-      this.expiryTime = new Date(response.data.expiryTime);
-
-      console.log(`Token generated. Expires: ${this.expiryTime.toISOString()}`);
-      return this.currentToken;
+      const { accessToken, expiryTime } = response.data;
+			if (!accessToken || !expiryTime) {
+			throw new Error(`Dhan auth failed: ${JSON.stringify(response.data)}`);
+			}
+			const parsed = new Date(expiryTime);
+			if (isNaN(parsed.getTime())) {
+			throw new Error(`Invalid expiryTime from Dhan: "${expiryTime}"`);
+			}
+			this.currentToken = accessToken;
+			this.expiryTime = parsed;
+			console.log(`Token generated. Expires: ${this.expiryTime.toISOString()}`);
+			return this.currentToken;
     } catch (err) {
       console.error('Token generation failed:', err.response?.data || err.message);
       throw err;
