@@ -52,30 +52,26 @@ class DhanProvider extends MarketDataProvider {
   }
 
   async connectWebSocket() {
-    return new Promise((resolve, reject) => {
-      const wsUrl = `${this.wsUrl}?token=${this.accessToken}&client_id=${this.clientId}`;
-      this.ws = new WebSocket(wsUrl);
+  return new Promise((resolve, reject) => {
+    this.ws = new WebSocket(this.wsUrl); // no query params
 
-      this.ws.on('open', () => {
-        this.reconnectAttempts = 0;
-        this.emit('ws:connected');
-        this.startHeartbeat();
-        resolve();
-      });
+    this.ws.on('open', () => {
+      // Send binary auth packet first
+      const clientIdBytes = Buffer.alloc(30, ' ');
+      const tokenBytes = Buffer.alloc(500, ' ');
+      Buffer.from(this.clientId).copy(clientIdBytes);
+      Buffer.from(this.accessToken).copy(tokenBytes);
 
-      this.ws.on('message', (data) => {
-        this.handleWsMessage(data);
-      });
+      const authPacket = Buffer.alloc(531);
+      authPacket.writeUInt8(11, 0); // RequestCode 11 = auth
+      clientIdBytes.copy(authPacket, 1);
+      tokenBytes.copy(authPacket, 31);
 
-      this.ws.on('error', (err) => {
-        this.emit('ws:error', err);
-        reject(err);
-      });
-
-      this.ws.on('close', () => {
-        this.emit('ws:disconnected');
-        this.handleReconnect();
-      });
+      this.ws.send(authPacket);
+      this.reconnectAttempts = 0;
+      this.emit('ws:connected');
+      this.startHeartbeat();
+      resolve();
     });
   }
 
