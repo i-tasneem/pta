@@ -70,9 +70,7 @@ class TokenManager {
     console.log(`Token generated. Expires: ${this.expiryTime.toISOString()}`);
     return this.currentToken;
   }
-  // ... rest unchanged
-}
-async getToken() {
+  async getToken() {
   if (!this.isTokenValid()) {
     await this.generateToken();
   }
@@ -92,4 +90,6 @@ stop() {
     clearInterval(this.refreshInterval);
   }
 }
+}
+
 module.exports = TokenManager;
