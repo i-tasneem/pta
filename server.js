@@ -54,7 +54,7 @@ class PTAServer {
 
     // Step 2: Generate/refresh Dhan access token (Railway-safe)
     if (process.env.USE_MOCK !== 'true' && config.provider.totpSecret) {
-      his.tokenManager = new TokenManager({
+      this.tokenManager = new TokenManager({
   clientId: config.provider.clientId,
   pin: config.provider.pin,
   totpSecret: config.provider.totpSecret
