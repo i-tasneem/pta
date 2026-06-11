@@ -3,12 +3,14 @@ module.exports = {
   // Market Data Provider
   provider: {
     name: 'Dhan',
-    clientId: process.env.DHAN_CLIENT_ID || '',
-    accessToken: process.env.DHAN_ACCESS_TOKEN || '',
+    clientId: process.env.DHAN_CLIENT_ID,
+    accessToken: process.env.DHAN_ACCESS_TOKEN, // Will be updated by TokenManager
+    pin: process.env.DHAN_PIN,                  // Your 6-digit Dhan PIN
+    totpSecret: process.env.DHAN_TOTP_SECRET,   // TOTP secret from Dhan Web
     wsUrl: 'wss://api-feed.dhan.co',
     restUrl: 'https://api.dhan.co',
     rateLimit: 25,
-    tokenRefreshInterval: 20 * 60 * 1000
+    tokenRefreshInterval: 20 * 60 * 60 * 1000 // 20 hours
   },
 
   // Instruments to monitor
