@@ -72,7 +72,7 @@ class DhanProvider extends MarketDataProvider {
       this.emit('ws:connected');
       this.startHeartbeat();
       resolve();
-    });
+    });)
   }}
 
   handleWsMessage(data) {
