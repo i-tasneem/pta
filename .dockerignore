@@ -1,0 +1,6 @@
+node_modules
+npm-debug.log
+.env
+pta_archive.db
+.DS_Store
+.git

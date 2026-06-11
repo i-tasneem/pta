@@ -5,6 +5,7 @@ const EventNormalizer = require('./providers/EventNormalizer');
 const EventBus = require('./utils/EventBus');
 const RedisSchema = require('./utils/RedisSchema');
 const PerformanceMonitor = require('./utils/PerformanceMonitor');
+const TokenManager = require('./utils/TokenManager');
 const ScannerOrchestrator = require('./scanner/ScannerOrchestrator');
 const RegimeEngine = require('./regime/RegimeEngine');
 const MultiTimeframeEngine = require('./regime/MultiTimeframeEngine');
@@ -25,6 +26,7 @@ class PTAServer {
     this.eventBus = new EventBus(config.redis.url, config.redis.keyPrefix);
     this.schema = new RedisSchema(config.redis.keyPrefix);
     this.perf = new PerformanceMonitor();
+    this.tokenManager = null;
     this.provider = null;
     this.normalizer = null;
     this.scanners = null;
@@ -44,16 +46,36 @@ class PTAServer {
 
   async initialize() {
     console.log('Initializing PTA Server...');
+    console.log('Environment:', process.env.NODE_ENV || 'development');
+
+    // Step 1: Connect to Redis
     await this.eventBus.connect();
     console.log('✓ Redis connected');
 
+    // Step 2: Generate/refresh Dhan access token (Railway-safe)
+    if (process.env.USE_MOCK !== 'true' && config.provider.totpSecret) {
+      this.tokenManager = new TokenManager({
+        clientId: config.provider.clientId,
+        pin: config.provider.pin,
+        totpSecret: config.provider.totpSecret
+      });
+      await this.tokenManager.initialize();
+      config.provider.accessToken = this.tokenManager.getToken();
+      console.log('✓ Dhan token generated via TOTP');
+    } else if (process.env.USE_MOCK !== 'true' && !config.provider.accessToken) {
+      console.warn('⚠ No Dhan access token or TOTP secret configured. Set DHAN_ACCESS_TOKEN or DHAN_TOTP_SECRET env var.');
+    }
+
+    // Step 3: Initialize market data provider
     if (process.env.USE_MOCK === 'true') {
       this.provider = new MockProvider(config.provider);
+      console.log('✓ MockProvider initialized (test mode)');
     } else {
       this.provider = new DhanProvider(config.provider);
     }
     this.normalizer = new EventNormalizer(this.schema, this.eventBus);
 
+    // Step 4: Initialize all engines
     this.scanners = new ScannerOrchestrator(this.eventBus, this.schema, config);
     this.regime = new RegimeEngine(this.eventBus, this.schema);
     this.mtf = new MultiTimeframeEngine(this.eventBus, this.schema);
@@ -75,6 +97,13 @@ class PTAServer {
   }
 
   async start() {
+    // Pre-flight token check (Railway: token may expire during sleep)
+    if (this.tokenManager && !this.tokenManager.isTokenValid()) {
+      console.log('Token near expiry, refreshing before connect...');
+      await this.tokenManager.generateToken();
+      this.provider.accessToken = this.tokenManager.getToken();
+    }
+
     await this.provider.connect();
     console.log('✓ Provider connected');
 
@@ -92,6 +121,7 @@ class PTAServer {
     this.provider.on('ws:error', (err) => console.error('Provider WS error:', err.message));
     this.provider.on('ws:disconnected', () => console.warn('Provider WS disconnected'));
 
+    // Start all engines
     await this.scanners.start();
     await this.ranking.start();
     await this.entryTrigger.start();
@@ -99,18 +129,21 @@ class PTAServer {
     await this.notification.start();
     await this.archiver.start();
 
+    // Start HTTP + WS gateway
     const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config);
-    const server = expressGateway.listen(process.env.PORT || 3000);
+    const port = process.env.PORT || 3000;
+    const server = expressGateway.listen(port);
 
     this.wsGateway = new WebSocketGateway(server, this.eventBus, this.schema, config);
     await this.wsGateway.initialize();
     this.wsGateway.startEventStreaming();
 
+    // Health monitor
     this.health = new HealthMonitor(this.eventBus, this.schema, this.provider, this.scanners);
     await this.health.start();
 
     console.log('✓ PTA Server fully operational');
-    console.log(`  Dashboard: http://localhost:${process.env.PORT || 3000}`);
+    console.log(`  Health: http://localhost:${port}/api/health`);
   }
 
   async stop() {
@@ -122,6 +155,7 @@ class PTAServer {
     this.signalLifecycle?.stop();
     this.notification?.stop();
     this.archiver?.stop();
+    this.tokenManager?.stop();
     await this.provider?.disconnect();
     await this.eventBus?.disconnect();
     console.log('✓ PTA Server stopped');
@@ -129,8 +163,10 @@ class PTAServer {
 }
 
 const server = new PTAServer();
+
 process.on('SIGINT', async () => { await server.stop(); process.exit(0); });
 process.on('SIGTERM', async () => { await server.stop(); process.exit(0); });
+
 server.initialize().then(() => server.start()).catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
