@@ -52,28 +52,43 @@ class DhanProvider extends MarketDataProvider {
   }
 
   async connectWebSocket() {
-  return new Promise((resolve, reject) => {
-    this.ws = new WebSocket(this.wsUrl); // no query params
+    return new Promise((resolve, reject) => {
+      this.ws = new WebSocket(this.wsUrl);
 
-    this.ws.on('open', () => {
-      // Send binary auth packet first
-      const clientIdBytes = Buffer.alloc(30, ' ');
-      const tokenBytes = Buffer.alloc(500, ' ');
-      Buffer.from(this.clientId).copy(clientIdBytes);
-      Buffer.from(this.accessToken).copy(tokenBytes);
+      this.ws.on('open', () => {
+        // Send binary auth packet
+        const clientIdBuf = Buffer.alloc(30, ' ');
+        const tokenBuf = Buffer.alloc(500, ' ');
+        Buffer.from(this.clientId).copy(clientIdBuf);
+        Buffer.from(this.accessToken).copy(tokenBuf);
 
-      const authPacket = Buffer.alloc(531);
-      authPacket.writeUInt8(11, 0); // RequestCode 11 = auth
-      clientIdBytes.copy(authPacket, 1);
-      tokenBytes.copy(authPacket, 31);
+        const authPacket = Buffer.alloc(531);
+        authPacket.writeUInt8(11, 0);
+        clientIdBuf.copy(authPacket, 1);
+        tokenBuf.copy(authPacket, 31);
 
-      this.ws.send(authPacket);
-      this.reconnectAttempts = 0;
-      this.emit('ws:connected');
-      this.startHeartbeat();
-      resolve();
-    });)
-  }}
+        this.ws.send(authPacket);
+        this.reconnectAttempts = 0;
+        this.emit('ws:connected');
+        this.startHeartbeat();
+        resolve();
+      });
+
+      this.ws.on('message', (data) => {
+        this.handleWsMessage(data);
+      });
+
+      this.ws.on('error', (err) => {
+        this.emit('ws:error', err);
+        reject(err);
+      });
+
+      this.ws.on('close', () => {
+        this.emit('ws:disconnected');
+        this.handleReconnect();
+      });
+    });
+  }
 
   handleWsMessage(data) {
     // Dhan binary protocol parsing
@@ -263,11 +278,11 @@ class DhanProvider extends MarketDataProvider {
 
     const url = `${this.restUrl}${endpoint}`;
     const headers = {
-			'access-token': this.accessToken,
-			'client-id': this.clientId,
-			'Content-Type': 'application/json',
-			'Accept': 'application/json'
-				};
+      'access-token': this.accessToken,
+      'client-id': this.clientId,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    };
 
     const options = { method, url, headers };
     if (body) options.data = body;
