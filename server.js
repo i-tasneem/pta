@@ -147,6 +147,10 @@ class PTAServer {
     // Poll option chains round-robin (Dhan limit: 1 chain request / 3s)
     this.startChainPolling(instruments);
 
+    // Regime + MTF + opportunity scoring; publishes opportunity:score,
+    // which is what wakes the entry-trigger gates and the ranking engine
+    this.startAnalysisLoop(instruments);
+
     // Start all engines
     await this.scanners.start();
     await this.ranking.start();
@@ -170,6 +174,20 @@ class PTAServer {
 
     console.log('✓ PTA Server fully operational');
     console.log(`  Health: http://localhost:${port}/api/health`);
+  }
+
+  startAnalysisLoop(instruments) {
+    this.analysisTimer = setInterval(async () => {
+      for (const inst of instruments) {
+        try {
+          await this.mtf.calculateAgreement(inst.symbol);
+          await this.regime.detectRegime(inst.symbol);
+          await this.opportunity.calculateScore(inst.symbol);
+        } catch (err) {
+          console.error(`Analysis ${inst.symbol}:`, err.message);
+        }
+      }
+    }, 10000);
   }
 
   retryProviderInBackground(connectProvider, err) {
@@ -228,6 +246,7 @@ class PTAServer {
     console.log('Shutting down PTA Server...');
     if (this.chainTimer) clearInterval(this.chainTimer);
     if (this.providerRetryTimer) clearInterval(this.providerRetryTimer);
+    if (this.analysisTimer) clearInterval(this.analysisTimer);
     this.health?.stop();
     this.scanners?.stop();
     this.ranking?.stop();

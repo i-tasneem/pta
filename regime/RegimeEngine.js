@@ -61,7 +61,9 @@ class RegimeEngine {
       confidence = 0.6;
     }
 
-    // Write to Redis
+    // Capture previous regime before overwriting it
+    const previousRegime = state.regime || null;
+
     await this.eventBus.hset(this.schema.marketState(instrument), {
       regime,
       regimeConfidence: confidence.toFixed(2),
@@ -71,8 +73,6 @@ class RegimeEngine {
       timestamp: Date.now()
     });
 
-    // Emit regime change if different
-    const previousRegime = await this.eventBus.hget(this.schema.marketState(instrument), 'regime');
     if (previousRegime !== regime) {
       await this.eventBus.publish('regime:change', instrument, {
         from: previousRegime,
