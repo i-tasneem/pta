@@ -1,0 +1,5 @@
+node_modules/
+frontend/dist/
+.env
+pta_archive.db
+*.log
