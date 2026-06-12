@@ -109,7 +109,18 @@ class PTAServer {
       this.provider.accessToken = await this.tokenManager.getToken();
     }
 
-    await this.provider.connect();
+    try {
+      await this.provider.connect();
+    } catch (err) {
+      // Cached token may be stale (e.g. credentials rotated) — regenerate and retry once
+      if (this.tokenManager) {
+        console.warn('Provider connect failed, regenerating token:', err.message);
+        this.provider.accessToken = await this.tokenManager.invalidate();
+        await this.provider.connect();
+      } else {
+        throw err;
+      }
+    }
     console.log('✓ Provider connected');
 
     const instruments = config.instruments.indices;

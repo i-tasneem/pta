@@ -77,6 +77,16 @@ class TokenManager {
   return this.currentToken;
 }
 
+// Drop the cached token (e.g. after the broker rejects it) and force a fresh one
+async invalidate() {
+  this.currentToken = null;
+  this.expiryTime = null;
+  if (this.redis) {
+    await this.redis.del('pta:dhan:token');
+  }
+  return this.generateToken();
+}
+
 isTokenValid() {
   return (
     this.currentToken &&
