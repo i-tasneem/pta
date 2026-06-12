@@ -109,23 +109,29 @@ class PTAServer {
       this.provider.accessToken = await this.tokenManager.getToken();
     }
 
-    try {
+    const instruments = config.instruments.indices;
+
+    const connectProvider = async () => {
       await this.provider.connect();
+      await this.provider.subscribeTicks(instruments);
+      console.log('✓ Provider connected');
+    };
+
+    try {
+      await connectProvider();
     } catch (err) {
       // Only regenerate when the broker rejected the token itself; a WS or
       // network failure with a fresh token would just burn the 2-min rate limit
       if (this.tokenManager && err.message.includes('Token validation failed')) {
         console.warn('Provider connect failed, regenerating token:', err.message);
         this.provider.accessToken = await this.tokenManager.invalidate();
-        await this.provider.connect();
+        await connectProvider().catch(e => this.retryProviderInBackground(connectProvider, e));
       } else {
-        throw err;
+        // Feed may be throttling after restart storms; REST (option chains)
+        // still works, so come up degraded and keep retrying the feed
+        this.retryProviderInBackground(connectProvider, err);
       }
     }
-    console.log('✓ Provider connected');
-
-    const instruments = config.instruments.indices;
-    await this.provider.subscribeTicks(instruments);
 
     this.provider.on('tick', async (tick) => {
       const timer = this.perf.startTimer('tick_processing');
@@ -164,6 +170,21 @@ class PTAServer {
 
     console.log('✓ PTA Server fully operational');
     console.log(`  Health: http://localhost:${port}/api/health`);
+  }
+
+  retryProviderInBackground(connectProvider, err) {
+    console.error('Provider unavailable, will retry every 60s:', err.message);
+    if (this.providerRetryTimer) return;
+
+    this.providerRetryTimer = setInterval(async () => {
+      try {
+        await connectProvider();
+        clearInterval(this.providerRetryTimer);
+        this.providerRetryTimer = null;
+      } catch (e) {
+        console.error('Provider retry failed:', e.message);
+      }
+    }, 60000);
   }
 
   startChainPolling(instruments) {
@@ -206,6 +227,7 @@ class PTAServer {
   async stop() {
     console.log('Shutting down PTA Server...');
     if (this.chainTimer) clearInterval(this.chainTimer);
+    if (this.providerRetryTimer) clearInterval(this.providerRetryTimer);
     this.health?.stop();
     this.scanners?.stop();
     this.ranking?.stop();

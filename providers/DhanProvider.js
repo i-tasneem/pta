@@ -67,48 +67,73 @@ class DhanProvider extends MarketDataProvider {
     }
   }
 
-  // Dhan throttles rapid reconnects; back off in-process rather than
-  // crashing into a container restart loop that keeps getting refused
+  // Dhan throttles rapid reconnects and caps concurrent feed connections;
+  // exactly one connect loop may run, backing off between attempts
   async connectWebSocket(maxAttempts = 5) {
-    let lastErr;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        return await this._connectWebSocketOnce();
-      } catch (err) {
-        lastErr = err;
-        const delay = Math.min(3000 * attempt, 15000);
-        console.warn(`WS connect attempt ${attempt}/${maxAttempts} failed (${err.message}), retrying in ${delay / 1000}s`);
-        await new Promise(r => setTimeout(r, delay));
+    if (this._connecting) throw new Error('WS connect already in progress');
+    this._connecting = true;
+
+    try {
+      let lastErr;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          return await this._connectWebSocketOnce();
+        } catch (err) {
+          lastErr = err;
+          const delay = Math.min(5000 * attempt, 30000);
+          console.warn(`WS connect attempt ${attempt}/${maxAttempts} failed (${err.message}), retrying in ${delay / 1000}s`);
+          await new Promise(r => setTimeout(r, delay));
+        }
       }
+      throw lastErr;
+    } finally {
+      this._connecting = false;
     }
-    throw lastErr;
+  }
+
+  _wsErrorDetail(err) {
+    if (err.message) return err.message;
+    if (err.errors?.length) return err.errors.map(e => e.message).join('; ');
+    return `code=${err.code || 'unknown'}`;
   }
 
   async _connectWebSocketOnce() {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(
+      const ws = new WebSocket(
         `wss://api-feed.dhan.co?version=2&token=${this.accessToken}&clientId=${this.clientId}&authType=2`
       );
+      this.ws = ws;
+      let opened = false;
 
-      this.ws.on('open', () => {
+      ws.on('open', () => {
+        opened = true;
         this.reconnectAttempts = 0;
         this.emit('ws:connected');
         this.startHeartbeat();
+
+        // Steady-state handlers only exist after a successful open, so a
+        // failed handshake never spawns reconnect loops
+        ws.on('close', () => {
+          this.emit('ws:disconnected');
+          if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+          }
+          if (this.connected) this.handleReconnect();
+        });
+
         resolve();
       });
 
-      this.ws.on('message', (data) => {
+      ws.on('message', (data) => {
         this.handleWsMessage(data);
       });
 
-      this.ws.on('error', (err) => {
+      ws.on('error', (err) => {
         this.emit('ws:error', err);
-        reject(new Error(`WebSocket connect failed: ${err.message || 'unknown error'}`));
-      });
-
-      this.ws.on('close', () => {
-        this.emit('ws:disconnected');
-        this.handleReconnect();
+        if (!opened) {
+          reject(new Error(`WebSocket connect failed: ${this._wsErrorDetail(err)}`));
+        }
       });
     });
   }
@@ -253,7 +278,7 @@ class DhanProvider extends MarketDataProvider {
     }
 
     this.reconnectAttempts++;
-    const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000);
+    const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts), 60000);
 
     setTimeout(() => {
       this.emit('ws:reconnecting', { attempt: this.reconnectAttempts, delay });
