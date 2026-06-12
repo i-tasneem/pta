@@ -72,11 +72,23 @@ class EventBus {
     await this.publisher.publish(`${this.keyPrefix}:${channel}`, JSON.stringify(message));
   }
 
+  // Redis accepts only strings; numbers/booleans crash the encoder,
+  // undefined/null corrupt the field list
+  _stringifyFields(fields) {
+    const flat = [];
+    for (const [k, v] of Object.entries(fields)) {
+      if (v === undefined || v === null) continue;
+      flat.push(k, String(v));
+    }
+    return flat;
+  }
+
   // Hash operations
   async hset(key, fields) {
     const flatFields = typeof fields === 'object' && !Array.isArray(fields)
-      ? Object.entries(fields).flat()
-      : fields;
+      ? this._stringifyFields(fields)
+      : fields.map(String);
+    if (flatFields.length === 0) return 0;
     return await this.client.hSet(key, flatFields);
   }
 
@@ -90,8 +102,7 @@ class EventBus {
 
   // Stream operations
   async xadd(key, id, fields) {
-    const flatFields = Object.entries(fields).flat();
-    return await this.client.xAdd(key, id, flatFields);
+    return await this.client.xAdd(key, id, this._stringifyFields(fields));
   }
 
   async xrange(key, start, end, count) {

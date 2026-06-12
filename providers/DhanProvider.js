@@ -67,7 +67,24 @@ class DhanProvider extends MarketDataProvider {
     }
   }
 
-  async connectWebSocket() {
+  // Dhan throttles rapid reconnects; back off in-process rather than
+  // crashing into a container restart loop that keeps getting refused
+  async connectWebSocket(maxAttempts = 5) {
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this._connectWebSocketOnce();
+      } catch (err) {
+        lastErr = err;
+        const delay = Math.min(3000 * attempt, 15000);
+        console.warn(`WS connect attempt ${attempt}/${maxAttempts} failed (${err.message}), retrying in ${delay / 1000}s`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+    throw lastErr;
+  }
+
+  async _connectWebSocketOnce() {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(
         `wss://api-feed.dhan.co?version=2&token=${this.accessToken}&clientId=${this.clientId}&authType=2`
