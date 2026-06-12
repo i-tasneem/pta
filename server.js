@@ -112,8 +112,9 @@ class PTAServer {
     try {
       await this.provider.connect();
     } catch (err) {
-      // Cached token may be stale (e.g. credentials rotated) — regenerate and retry once
-      if (this.tokenManager) {
+      // Only regenerate when the broker rejected the token itself; a WS or
+      // network failure with a fresh token would just burn the 2-min rate limit
+      if (this.tokenManager && err.message.includes('Token validation failed')) {
         console.warn('Provider connect failed, regenerating token:', err.message);
         this.provider.accessToken = await this.tokenManager.invalidate();
         await this.provider.connect();

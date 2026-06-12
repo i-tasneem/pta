@@ -39,13 +39,21 @@ class TokenManager {
     }, 20 * 60 * 60 * 1000);
   }
 
-  async generateToken() {
+  async generateToken(allowWait = true) {
     const { otp } = TOTP.generate(this.totpSecret);
     const response = await axios.post(
       'https://auth.dhan.co/app/generateAccessToken',
       null,
       { params: { dhanClientId: this.clientId, pin: this.pin, totp: otp } }
     );
+
+    // Dhan allows one token per 2 minutes; wait it out instead of crashing,
+    // otherwise a restart loop never escapes the rate limit
+    if (allowWait && response.data?.message?.includes('2 minutes')) {
+      console.warn('Dhan token rate-limited, waiting 130s before retry...');
+      await new Promise(r => setTimeout(r, 130000));
+      return this.generateToken(false);
+    }
 
     const { accessToken, expiryTime } = response.data;
     if (!accessToken || !expiryTime) {

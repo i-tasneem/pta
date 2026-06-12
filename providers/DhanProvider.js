@@ -47,7 +47,10 @@ class DhanProvider extends MarketDataProvider {
       const response = await this._request('GET', '/v2/fundlimit');
       return response.data;
     } catch (err) {
-      throw new Error(`Token validation failed: ${err.message}`);
+      const detail = err.response
+        ? `${err.response.status} ${JSON.stringify(err.response.data)}`
+        : err.message;
+      throw new Error(`Token validation failed: ${detail}`);
     }
   }
 
@@ -70,7 +73,7 @@ this.ws.on('open', () => {
 
       this.ws.on('error', (err) => {
         this.emit('ws:error', err);
-        reject(err);
+        reject(new Error(`WebSocket connect failed: ${err.message || 'unknown error'}`));
       });
 
       this.ws.on('close', () => {
