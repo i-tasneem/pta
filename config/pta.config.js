@@ -13,13 +13,14 @@ module.exports = {
   },
 
   instruments: {
+    // Dhan numeric security IDs (api-scrip-master), segment IDX_I for indices
     indices: [
-      { symbol: 'NIFTY', securityId: 'NSE_INDEX|Nifty 50', exchange: 'NSE', segment: 'IDX' },
-      { symbol: 'BANKNIFTY', securityId: 'NSE_INDEX|Nifty Bank', exchange: 'NSE', segment: 'IDX' },
-      { symbol: 'FINNIFTY', securityId: 'NSE_INDEX|Nifty Fin Service', exchange: 'NSE', segment: 'IDX' },
-      { symbol: 'MIDCPNIFTY', securityId: 'NSE_INDEX|Nifty Midcap 100', exchange: 'NSE', segment: 'IDX' },
-      { symbol: 'SENSEX', securityId: 'BSE_INDEX|SENSEX', exchange: 'BSE', segment: 'IDX' },
-      { symbol: 'BANKEX', securityId: 'BSE_INDEX|BANKEX', exchange: 'BSE', segment: 'IDX' }
+      { symbol: 'NIFTY', securityId: '13', exchangeSegment: 'IDX_I' },
+      { symbol: 'BANKNIFTY', securityId: '25', exchangeSegment: 'IDX_I' },
+      { symbol: 'FINNIFTY', securityId: '27', exchangeSegment: 'IDX_I' },
+      { symbol: 'MIDCPNIFTY', securityId: '442', exchangeSegment: 'IDX_I' },
+      { symbol: 'SENSEX', securityId: '51', exchangeSegment: 'IDX_I' },
+      { symbol: 'BANKEX', securityId: '69', exchangeSegment: 'IDX_I' }
     ],
     stocks: [
       'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'AXISBANK', 'KOTAKBANK',

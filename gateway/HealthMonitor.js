@@ -19,7 +19,7 @@ class HealthMonitor {
 
         await this.eventBus.hset(this.schema.health(), {
           wsConnected: this.provider.connected ? '1' : '0',
-          lastTickTime: Date.now(),
+          lastTickTime: this.provider.lastTickAt || 0,
           activeScanners: this.scanner.getInstrumentCount(),
           activeSignals: activeSignals.length,
           topOpportunities: topOpps.length,

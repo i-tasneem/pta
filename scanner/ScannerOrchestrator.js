@@ -100,7 +100,7 @@ class ScannerOrchestrator {
 
   async onTickFromProvider(tick) {
     // Direct tick from provider (bypasses event bus for lower latency)
-    const symbol = tick.tradingSymbol || tick.securityId;
+    const symbol = tick.instrument || tick.tradingSymbol || tick.securityId;
     const scanners = this.instruments.get(symbol);
     if (scanners) {
       await scanners.tick.onTick(tick);

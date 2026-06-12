@@ -138,6 +138,9 @@ class PTAServer {
     this.provider.on('ws:error', (err) => console.error('Provider WS error:', err.message));
     this.provider.on('ws:disconnected', () => console.warn('Provider WS disconnected'));
 
+    // Poll option chains round-robin (Dhan limit: 1 chain request / 3s)
+    this.startChainPolling(instruments);
+
     // Start all engines
     await this.scanners.start();
     await this.ranking.start();
@@ -163,8 +166,46 @@ class PTAServer {
     console.log(`  Health: http://localhost:${port}/api/health`);
   }
 
+  startChainPolling(instruments) {
+    const expiries = new Map(); // symbol -> nearest expiry
+    let i = 0;
+
+    this.chainTimer = setInterval(async () => {
+      const inst = instruments[i % instruments.length];
+      i++;
+
+      try {
+        if (!expiries.has(inst.symbol)) {
+          if (typeof this.provider.getExpiryList !== 'function') {
+            expiries.set(inst.symbol, null);
+          } else {
+            const list = await this.provider.getExpiryList(inst.securityId, inst.exchangeSegment);
+            expiries.set(inst.symbol, list[0] || null);
+            return; // expiry list call shares the chain rate limit; fetch chain next slot
+          }
+        }
+
+        const raw = await this.provider.getOptionChain(
+          inst.securityId,
+          inst.exchangeSegment,
+          expiries.get(inst.symbol)
+        );
+
+        if (!raw || !raw.data || raw.data.length === 0) return;
+
+        const chain = this.normalizer.normalizeOptionChain(raw, inst.symbol);
+        await this.normalizer.writeOptionChain(chain);
+        await this.scanners.onOptionChainFromProvider(chain);
+      } catch (err) {
+        const detail = err.response ? JSON.stringify(err.response.data) : err.message;
+        console.error(`Chain poll ${inst.symbol}:`, detail);
+      }
+    }, 3500);
+  }
+
   async stop() {
     console.log('Shutting down PTA Server...');
+    if (this.chainTimer) clearInterval(this.chainTimer);
     this.health?.stop();
     this.scanners?.stop();
     this.ranking?.stop();

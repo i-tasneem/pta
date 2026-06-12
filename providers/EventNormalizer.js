@@ -7,21 +7,25 @@ class EventNormalizer {
 
   // Normalize Dhan tick to unified format
   normalizeTick(rawTick) {
+    const num = v => {
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : 0;
+    };
     return {
       instrument: rawTick.tradingSymbol || rawTick.securityId,
       securityId: rawTick.securityId,
-      ltp: parseFloat(rawTick.lastPrice || rawTick.ltp),
-      bid: parseFloat(rawTick.bid || rawTick.bidPrice),
-      ask: parseFloat(rawTick.ask || rawTick.askPrice),
-      volume: parseInt(rawTick.volume || rawTick.totalTradedQty, 10),
-      oi: parseInt(rawTick.oi || rawTick.openInterest, 10),
-      change: parseFloat(rawTick.change || 0),
-      changePercent: parseFloat(rawTick.changePercent || 0),
-      vwap: parseFloat(rawTick.vwap || 0),
-      high: parseFloat(rawTick.dayHigh || rawTick.high),
-      low: parseFloat(rawTick.dayLow || rawTick.low),
-      open: parseFloat(rawTick.dayOpen || rawTick.open),
-      prevClose: parseFloat(rawTick.prevClose || rawTick.previousClose),
+      ltp: num(rawTick.lastPrice ?? rawTick.ltp),
+      bid: num(rawTick.bid ?? rawTick.bidPrice),
+      ask: num(rawTick.ask ?? rawTick.askPrice),
+      volume: Math.trunc(num(rawTick.volume ?? rawTick.totalTradedQty)),
+      oi: Math.trunc(num(rawTick.oi ?? rawTick.openInterest)),
+      change: num(rawTick.change),
+      changePercent: num(rawTick.changePercent),
+      vwap: num(rawTick.vwap),
+      high: num(rawTick.dayHigh ?? rawTick.high),
+      low: num(rawTick.dayLow ?? rawTick.low),
+      open: num(rawTick.dayOpen ?? rawTick.open),
+      prevClose: num(rawTick.prevClose ?? rawTick.previousClose),
       timestamp: Date.now()
     };
   }
@@ -116,7 +120,9 @@ class EventNormalizer {
 
   // Write normalized option chain to Redis
   async writeOptionChain(chain) {
-    const key = this.schema.optionChain(chain.instrument, chain.expiry);
+    // Keyed without expiry: readers (gateway, opportunity engine) look up
+    // optionChain(instrument); the expiry is stored as a field
+    const key = this.schema.optionChain(chain.instrument);
     const fields = {
       atmStrike: chain.atmStrike,
       pcr: chain.pcr,

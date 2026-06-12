@@ -1,7 +1,19 @@
 // providers/DhanProvider.js
+// Dhan API v2 integration: JSON subscription + little-endian binary feed,
+// REST option chain (POST /v2/optionchain, rate-limited to 1 req / 3s).
 const MarketDataProvider = require('./MarketDataProvider');
 const axios = require('axios');
 const WebSocket = require('ws');
+
+// Feed response codes (Dhan v2 market feed)
+const FEED = {
+  TICKER: 2,
+  QUOTE: 4,
+  OI: 5,
+  PREV_CLOSE: 6,
+  FULL: 8,
+  DISCONNECT: 50
+};
 
 class DhanProvider extends MarketDataProvider {
   constructor(config) {
@@ -9,17 +21,18 @@ class DhanProvider extends MarketDataProvider {
     this.clientId = config.clientId;
     this.accessToken = config.accessToken;
     this.restUrl = config.restUrl || 'https://api.dhan.co';
-    this.wsUrl =`${config.wsUrl || 'wss://api-feed.dhan.co'}?version=2&token=${this.accessToken}&clientId=${this.clientId}&authType=2`;
     this.rateLimit = config.rateLimit || 25;
     this.ws = null;
     this.subscribedInstruments = new Set();
+    this.securityMap = new Map();   // securityId -> { symbol, exchangeSegment }
+    this.tickState = new Map();     // securityId -> accumulated tick fields
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 10;
     this.reconnectDelay = 1000;
     this.heartbeatInterval = null;
-    this.requestQueue = [];
     this.lastRequestTime = 0;
     this.minRequestInterval = 1000 / this.rateLimit;
+    this.lastTickAt = 0;
   }
 
   async connect() {
@@ -57,15 +70,15 @@ class DhanProvider extends MarketDataProvider {
   async connectWebSocket() {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(
-  `wss://api-feed.dhan.co?version=2&token=${this.accessToken}&clientId=${this.clientId}&authType=2`
-);
+        `wss://api-feed.dhan.co?version=2&token=${this.accessToken}&clientId=${this.clientId}&authType=2`
+      );
 
-this.ws.on('open', () => {
-  this.reconnectAttempts = 0;
-  this.emit('ws:connected');
-  this.startHeartbeat();
-  resolve();
-});
+      this.ws.on('open', () => {
+        this.reconnectAttempts = 0;
+        this.emit('ws:connected');
+        this.startHeartbeat();
+        resolve();
+      });
 
       this.ws.on('message', (data) => {
         this.handleWsMessage(data);
@@ -84,81 +97,134 @@ this.ws.on('open', () => {
   }
 
   handleWsMessage(data) {
-    // Dhan binary protocol parsing
-    if (Buffer.isBuffer(data)) {
-      const responseCode = data.readUInt8(0);
+    if (!Buffer.isBuffer(data)) return;
 
-      switch (responseCode) {
-        case 15: // Tick data
-          this.parseTickPacket(data);
-          break;
-        case 16: // Index data
-          this.parseIndexPacket(data);
-          break;
-        case 17: // Full packet
-          this.parseFullPacket(data);
-          break;
-        default:
-          this.emit('ws:unknown', { responseCode, data });
+    // A frame may contain several packets back to back; the header's
+    // message length (int16 LE at offset 1) is the total packet size.
+    let offset = 0;
+    while (offset + 8 <= data.length) {
+      const code = data.readUInt8(offset);
+      const msgLen = data.readUInt16LE(offset + 1);
+      const packet = data.subarray(offset, msgLen >= 8 ? offset + msgLen : data.length);
+
+      this.parsePacket(code, packet);
+
+      if (msgLen >= 8 && offset + msgLen < data.length) {
+        offset += msgLen;
+      } else {
+        break;
       }
     }
   }
 
-  parseTickPacket(buffer) {
+  parsePacket(code, buf) {
     try {
-      const instrumentToken = buffer.readUInt32BE(1);
-      const ltp = buffer.readFloatBE(5);
-      const bid = buffer.readFloatBE(9);
-      const ask = buffer.readFloatBE(13);
-      const volume = buffer.readUInt32BE(17);
-      const timestamp = buffer.readUInt32BE(21) * 1000;
+      const securityId = buf.readUInt32LE(4).toString();
 
-      const tick = {
-        securityId: instrumentToken.toString(),
-        lastPrice: ltp,
-        bidPrice: bid,
-        askPrice: ask,
-        totalTradedQty: volume,
-        timestamp
-      };
+      switch (code) {
+        case FEED.TICKER:
+          this.updateTick(securityId, {
+            lastPrice: buf.readFloatLE(8),
+            timestamp: buf.readUInt32LE(12) * 1000
+          });
+          break;
 
-      this.emit('tick', tick);
+        case FEED.QUOTE:
+          this.updateTick(securityId, {
+            lastPrice: buf.readFloatLE(8),
+            timestamp: buf.readUInt32LE(14) * 1000,
+            avgPrice: buf.readFloatLE(18),
+            volume: buf.readUInt32LE(22),
+            totalSellQty: buf.readUInt32LE(26),
+            totalBuyQty: buf.readUInt32LE(30),
+            dayOpen: buf.readFloatLE(34),
+            dayClose: buf.readFloatLE(38),
+            dayHigh: buf.readFloatLE(42),
+            dayLow: buf.readFloatLE(46)
+          });
+          break;
+
+        case FEED.FULL:
+          this.updateTick(securityId, {
+            lastPrice: buf.readFloatLE(8),
+            timestamp: buf.readUInt32LE(14) * 1000,
+            avgPrice: buf.readFloatLE(18),
+            volume: buf.readUInt32LE(22),
+            totalSellQty: buf.readUInt32LE(26),
+            totalBuyQty: buf.readUInt32LE(30),
+            openInterest: buf.readUInt32LE(34),
+            dayOpen: buf.readFloatLE(46),
+            dayClose: buf.readFloatLE(50),
+            dayHigh: buf.readFloatLE(54),
+            dayLow: buf.readFloatLE(58)
+          });
+          break;
+
+        case FEED.PREV_CLOSE:
+          this.updateTick(securityId, {
+            previousClose: buf.readFloatLE(8),
+            previousOI: buf.readUInt32LE(12)
+          }, false);
+          break;
+
+        case FEED.OI:
+          this.updateTick(securityId, {
+            openInterest: buf.readUInt32LE(8)
+          }, false);
+          break;
+
+        case FEED.DISCONNECT:
+          this.emit('ws:serverDisconnect', {
+            reason: buf.length >= 10 ? buf.readUInt16LE(8) : 0
+          });
+          break;
+
+        default:
+          this.emit('ws:unknown', { responseCode: code });
+      }
     } catch (err) {
-      this.emit('ws:parseError', { type: 'tick', error: err.message });
+      this.emit('ws:parseError', { code, error: err.message });
     }
   }
 
-  parseIndexPacket(buffer) {
-    // Similar to tick but for index data
-    try {
-      const instrumentToken = buffer.readUInt32BE(1);
-      const ltp = buffer.readFloatBE(5);
-      const timestamp = buffer.readUInt32BE(21) * 1000;
+  updateTick(securityId, fields, emitTick = true) {
+    const mapping = this.securityMap.get(securityId);
+    if (!mapping) return;
 
-      const tick = {
-        securityId: instrumentToken.toString(),
-        lastPrice: ltp,
-        timestamp
-      };
+    const state = this.tickState.get(securityId) || {};
+    Object.assign(state, fields);
+    this.tickState.set(securityId, state);
 
-      this.emit('tick', tick);
-    } catch (err) {
-      this.emit('ws:parseError', { type: 'index', error: err.message });
-    }
-  }
+    if (!emitTick || !state.lastPrice) return;
 
-  parseFullPacket(buffer) {
-    // Extended packet with more fields
-    this.parseTickPacket(buffer);
+    const prevClose = state.previousClose || 0;
+    const change = prevClose ? state.lastPrice - prevClose : 0;
+
+    this.lastTickAt = Date.now();
+    this.emit('tick', {
+      tradingSymbol: mapping.symbol,
+      securityId,
+      lastPrice: state.lastPrice,
+      bidPrice: state.bidPrice || 0,
+      askPrice: state.askPrice || 0,
+      totalTradedQty: state.volume || 0,
+      openInterest: state.openInterest || 0,
+      change,
+      changePercent: prevClose ? (change / prevClose) * 100 : 0,
+      vwap: state.avgPrice || 0,
+      dayHigh: state.dayHigh || 0,
+      dayLow: state.dayLow || 0,
+      dayOpen: state.dayOpen || 0,
+      previousClose: prevClose,
+      timestamp: state.timestamp || Date.now()
+    });
   }
 
   startHeartbeat() {
+    // Dhan disconnects idle connections; RequestCode 50 from server signals it
     this.heartbeatInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        const heartbeat = Buffer.alloc(2);
-        heartbeat.writeUInt8(11, 0); // RequestCode 11
-        heartbeat.writeUInt8(1, 1);
-        this.ws.send(heartbeat);
+        this.ws.ping();
       }
     }, 30000);
   }
@@ -174,8 +240,19 @@ this.ws.on('open', () => {
 
     setTimeout(() => {
       this.emit('ws:reconnecting', { attempt: this.reconnectAttempts, delay });
-      this.connectWebSocket().catch(() => {});
+      this.connectWebSocket()
+        .then(() => this.resubscribe())
+        .catch(() => {});
     }, delay);
+  }
+
+  async resubscribe() {
+    const instruments = Array.from(this.securityMap.entries()).map(
+      ([securityId, m]) => ({ symbol: m.symbol, securityId, exchangeSegment: m.exchangeSegment })
+    );
+    if (instruments.length > 0) {
+      await this.subscribeTicks(instruments);
+    }
   }
 
   async subscribeTicks(instruments) {
@@ -183,63 +260,121 @@ this.ws.on('open', () => {
       throw new Error('WebSocket not connected');
     }
 
-    const tokens = instruments.map(i => parseInt(i.securityId || i, 10)).filter(Boolean);
-    if (tokens.length === 0) return;
+    const list = instruments
+      .filter(i => i.securityId)
+      .map(i => {
+        this.securityMap.set(String(i.securityId), {
+          symbol: i.symbol,
+          exchangeSegment: i.exchangeSegment || 'IDX_I'
+        });
+        this.subscribedInstruments.add(i.symbol);
+        return {
+          ExchangeSegment: i.exchangeSegment || 'IDX_I',
+          SecurityId: String(i.securityId)
+        };
+      });
 
-    const packet = Buffer.alloc(3 + tokens.length * 4);
-    packet.writeUInt8(15, 0); // RequestCode 15 (Subscribe)
-    packet.writeUInt16BE(tokens.length, 1);
+    if (list.length === 0) return;
 
-    for (let i = 0; i < tokens.length; i++) {
-      packet.writeUInt32BE(tokens[i], 3 + i * 4);
-    }
-
-    this.ws.send(packet);
-
-    for (const inst of instruments) {
-      this.subscribedInstruments.add(inst.symbol || inst.securityId || inst);
+    // RequestCode 15 = ticker, 17 = quote; subscribe to quote for OHLC + volume
+    for (const requestCode of [15, 17]) {
+      this.ws.send(JSON.stringify({
+        RequestCode: requestCode,
+        InstrumentCount: list.length,
+        InstrumentList: list
+      }));
     }
   }
 
   async unsubscribeTicks(instruments) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
-    const tokens = instruments.map(i => parseInt(i.securityId || i, 10)).filter(Boolean);
-    if (tokens.length === 0) return;
+    const list = instruments
+      .filter(i => i.securityId)
+      .map(i => {
+        this.securityMap.delete(String(i.securityId));
+        this.subscribedInstruments.delete(i.symbol);
+        return {
+          ExchangeSegment: i.exchangeSegment || 'IDX_I',
+          SecurityId: String(i.securityId)
+        };
+      });
 
-    const packet = Buffer.alloc(3 + tokens.length * 4);
-    packet.writeUInt8(16, 0); // RequestCode 16 (Unsubscribe)
-    packet.writeUInt16BE(tokens.length, 1);
+    if (list.length === 0) return;
 
-    for (let i = 0; i < tokens.length; i++) {
-      packet.writeUInt32BE(tokens[i], 3 + i * 4);
-    }
-
-    this.ws.send(packet);
-
-    for (const inst of instruments) {
-      this.subscribedInstruments.delete(inst.symbol || inst.securityId || inst);
+    for (const requestCode of [16, 18]) {
+      this.ws.send(JSON.stringify({
+        RequestCode: requestCode,
+        InstrumentCount: list.length,
+        InstrumentList: list
+      }));
     }
   }
 
   async getLTP(securityIds) {
     const ids = Array.isArray(securityIds) ? securityIds : [securityIds];
-    const response = await this._request('POST', '/v2/quotes/ltp', {
-      data: ids.map(id => ({ NSE: id, BSE: id }))
+    const response = await this._request('POST', '/v2/marketfeed/ltp', {
+      NSE_EQ: ids
     });
     return response.data;
   }
 
-  async getOptionChain(securityId) {
-    const response = await this._request('GET', `/v2/option-chain/${securityId}`);
-    return response.data;
+  // Returns the chain in the shape EventNormalizer.normalizeOptionChain expects
+  async getOptionChain(underlyingScrip, underlyingSeg = 'IDX_I', expiry = null) {
+    const body = {
+      UnderlyingScrip: parseInt(underlyingScrip, 10),
+      UnderlyingSeg: underlyingSeg
+    };
+    if (expiry) body.Expiry = expiry;
+
+    const response = await this._request('POST', '/v2/optionchain', body);
+    const payload = response.data?.data || {};
+    const oc = payload.oc || {};
+
+    const data = Object.entries(oc).map(([strike, row]) => ({
+      strikePrice: parseFloat(strike),
+      CE: this._mapLeg(row.ce),
+      PE: this._mapLeg(row.pe)
+    }));
+
+    return {
+      underlyingPrice: payload.last_price || 0,
+      expiryDate: expiry || '',
+      data
+    };
+  }
+
+  _mapLeg(leg) {
+    if (!leg) return {};
+    return {
+      lastPrice: leg.last_price || 0,
+      bidPrice: leg.top_bid_price || 0,
+      askPrice: leg.top_ask_price || 0,
+      totalTradedVolume: leg.volume || 0,
+      openInterest: leg.oi || 0,
+      change: (leg.last_price || 0) - (leg.previous_close_price || 0),
+      impliedVolatility: leg.implied_volatility || 0,
+      delta: leg.greeks?.delta || 0
+    };
+  }
+
+  async getExpiryList(underlyingScrip, underlyingSeg = 'IDX_I') {
+    const response = await this._request('POST', '/v2/optionchain/expirylist', {
+      UnderlyingScrip: parseInt(underlyingScrip, 10),
+      UnderlyingSeg: underlyingSeg
+    });
+    return response.data?.data || [];
   }
 
   async getHistoricalData(securityId, interval, from, to) {
-    const response = await this._request(
-      'GET',
-      `/v2/charts/historical/${securityId}/${interval}/${from}/${to}`
-    );
+    const response = await this._request('POST', '/v2/charts/intraday', {
+      securityId: String(securityId),
+      exchangeSegment: 'IDX_I',
+      instrument: 'INDEX',
+      interval: String(interval),
+      fromDate: from,
+      toDate: to
+    });
     return response.data;
   }
 
@@ -262,7 +397,6 @@ this.ws.on('open', () => {
       }
       records.push(record);
     }
-
     return records;
   }
 
