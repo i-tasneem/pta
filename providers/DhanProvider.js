@@ -9,7 +9,7 @@ class DhanProvider extends MarketDataProvider {
     this.clientId = config.clientId;
     this.accessToken = config.accessToken;
     this.restUrl = config.restUrl || 'https://api.dhan.co';
-    this.wsUrl = config.wsUrl || 'wss://api-feed.dhan.co';
+    this.wsUrl =`${config.wsUrl || 'wss://api-feed.dhan.co'}?version=2&token=${this.accessToken}&clientId=${this.clientId}&authType=2`;
     this.rateLimit = config.rateLimit || 25;
     this.ws = null;
     this.subscribedInstruments = new Set();
@@ -53,26 +53,16 @@ class DhanProvider extends MarketDataProvider {
 
   async connectWebSocket() {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.wsUrl);
+      this.ws = new WebSocket(
+  `wss://api-feed.dhan.co?version=2&token=${this.accessToken}&clientId=${this.clientId}&authType=2`
+);
 
-      this.ws.on('open', () => {
-        // Send binary auth packet
-        const clientIdBuf = Buffer.alloc(30, ' ');
-        const tokenBuf = Buffer.alloc(500, ' ');
-        Buffer.from(this.clientId).copy(clientIdBuf);
-        Buffer.from(this.accessToken).copy(tokenBuf);
-
-        const authPacket = Buffer.alloc(531);
-        authPacket.writeUInt8(11, 0);
-        clientIdBuf.copy(authPacket, 1);
-        tokenBuf.copy(authPacket, 31);
-
-        this.ws.send(authPacket);
-        this.reconnectAttempts = 0;
-        this.emit('ws:connected');
-        this.startHeartbeat();
-        resolve();
-      });
+this.ws.on('open', () => {
+  this.reconnectAttempts = 0;
+  this.emit('ws:connected');
+  this.startHeartbeat();
+  resolve();
+});
 
       this.ws.on('message', (data) => {
         this.handleWsMessage(data);

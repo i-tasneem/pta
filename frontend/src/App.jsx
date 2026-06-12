@@ -4,8 +4,12 @@ import OpportunityList from './components/OpportunityList';
 import RegimeMonitor from './components/RegimeMonitor';
 import NotificationCenter from './components/NotificationCenter';
 
-const API_URL = 'http://localhost:3000';
-const WS_URL = 'ws://localhost:3000';
+const API_URL = '';
+
+const WS_URL =
+  window.location.protocol === 'https:'
+    ? `wss://${window.location.host}`
+    : `ws://${window.location.host}`;
 
 function App() {
   const [activeTab, setActiveTab] = useState('triggered');
@@ -17,17 +21,23 @@ function App() {
 
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
+
     ws.onopen = () => setWsConnected(true);
     ws.onclose = () => setWsConnected(false);
+
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       handleWsMessage(msg);
     };
 
     fetchData();
+
     const interval = setInterval(fetchData, 2000);
 
-    return () => { ws.close(); clearInterval(interval); };
+    return () => {
+      ws.close();
+      clearInterval(interval);
+    };
   }, []);
 
   const fetchData = async () => {
@@ -36,8 +46,10 @@ function App() {
         fetch(`${API_URL}/api/signals/active`),
         fetch(`${API_URL}/api/opportunities?limit=10`)
       ]);
+
       const sigData = await sigRes.json();
       const oppData = await oppRes.json();
+
       setSignals(sigData.signals || []);
       setOpportunities(oppData.opportunities || []);
     } catch (err) {
@@ -49,14 +61,35 @@ function App() {
     switch (msg.type) {
       case 'opportunity:trigger':
         setSignals(prev => [msg.data, ...prev]);
-        setNotifications(prev => [{ ...msg.data, type: 'trigger', time: Date.now() }, ...prev].slice(0, 50));
+        setNotifications(prev => [
+          { ...msg.data, type: 'trigger', time: Date.now() },
+          ...prev
+        ].slice(0, 50));
         playBeep();
         break;
+
       case 'signal:state':
-        setSignals(prev => prev.map(s => s.id === msg.data.signalId ? { ...s, status: msg.data.to } : s));
+        setSignals(prev =>
+          prev.map(s =>
+            s.id === msg.data.signalId
+              ? { ...s, status: msg.data.to }
+              : s
+          )
+        );
         break;
+
       case 'regime:change':
-        setRegimes(prev => [...prev.filter(r => r.instrument !== msg.instrument), { instrument: msg.instrument, regime: msg.data.to, confidence: msg.data.confidence }]);
+        setRegimes(prev => [
+          ...prev.filter(r => r.instrument !== msg.instrument),
+          {
+            instrument: msg.instrument,
+            regime: msg.data.to,
+            confidence: msg.data.confidence
+          }
+        ]);
+        break;
+
+      default:
         break;
     }
   };
@@ -65,19 +98,45 @@ function App() {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
+
     osc.connect(gain);
     gain.connect(ctx.destination);
+
     osc.frequency.value = 800;
     gain.gain.value = 0.1;
+
     osc.start();
     osc.stop(ctx.currentTime + 0.2);
   };
 
   const tabs = [
-    { id: 'triggered', label: 'Triggered Signals', count: signals.filter(s => s.status === 'TRIGGERED').length },
-    { id: 'active', label: 'Active Signals', count: signals.filter(s => s.status !== 'TRIGGERED' && s.status !== 'EXIT' && s.status !== 'ABORTED').length },
-    { id: 'opportunities', label: 'Top Opportunities', count: opportunities.length },
-    { id: 'completed', label: 'Completed', count: signals.filter(s => s.status === 'EXIT' || s.status === 'ABORTED').length }
+    {
+      id: 'triggered',
+      label: 'Triggered Signals',
+      count: signals.filter(s => s.status === 'TRIGGERED').length
+    },
+    {
+      id: 'active',
+      label: 'Active Signals',
+      count: signals.filter(
+        s =>
+          s.status !== 'TRIGGERED' &&
+          s.status !== 'EXIT' &&
+          s.status !== 'ABORTED'
+      ).length
+    },
+    {
+      id: 'opportunities',
+      label: 'Top Opportunities',
+      count: opportunities.length
+    },
+    {
+      id: 'completed',
+      label: 'Completed',
+      count: signals.filter(
+        s => s.status === 'EXIT' || s.status === 'ABORTED'
+      ).length
+    }
   ];
 
   return (
@@ -85,12 +144,22 @@ function App() {
       <header className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-emerald-400">PTA</h1>
-          <p className="text-gray-400 text-sm">Personal Trading Assistant</p>
+          <p className="text-gray-400 text-sm">
+            Personal Trading Assistant
+          </p>
         </div>
+
         <div className="flex items-center gap-4">
-          <div className={`px-3 py-1 rounded text-xs font-medium ${wsConnected ? 'bg-emerald-900 text-emerald-400' : 'bg-red-900 text-red-400'}`}>
+          <div
+            className={`px-3 py-1 rounded text-xs font-medium ${
+              wsConnected
+                ? 'bg-emerald-900 text-emerald-400'
+                : 'bg-red-900 text-red-400'
+            }`}
+          >
             {wsConnected ? '● LIVE' : '○ OFFLINE'}
           </div>
+
           <RegimeMonitor regimes={regimes} />
         </div>
       </header>
@@ -108,7 +177,9 @@ function App() {
           >
             {tab.label}
             {tab.count > 0 && (
-              <span className="ml-2 bg-gray-900 text-white px-2 py-0.5 rounded text-xs">{tab.count}</span>
+              <span className="ml-2 bg-gray-900 text-white px-2 py-0.5 rounded text-xs">
+                {tab.count}
+              </span>
             )}
           </button>
         ))}
@@ -119,28 +190,47 @@ function App() {
           {activeTab === 'triggered' && (
             <div className="space-y-4">
               {signals.filter(s => s.status === 'TRIGGERED').length === 0 && (
-                <div className="text-gray-500 text-center py-12">No triggered signals yet</div>
+                <div className="text-gray-500 text-center py-12">
+                  No triggered signals yet
+                </div>
               )}
-              {signals.filter(s => s.status === 'TRIGGERED').map(signal => (
-                <SignalCard key={signal.id} signal={signal} />
-              ))}
+
+              {signals
+                .filter(s => s.status === 'TRIGGERED')
+                .map(signal => (
+                  <SignalCard key={signal.id} signal={signal} />
+                ))}
             </div>
           )}
+
           {activeTab === 'active' && (
             <div className="space-y-4">
-              {signals.filter(s => s.status !== 'TRIGGERED' && s.status !== 'EXIT' && s.status !== 'ABORTED').map(signal => (
-                <SignalCard key={signal.id} signal={signal} />
-              ))}
+              {signals
+                .filter(
+                  s =>
+                    s.status !== 'TRIGGERED' &&
+                    s.status !== 'EXIT' &&
+                    s.status !== 'ABORTED'
+                )
+                .map(signal => (
+                  <SignalCard key={signal.id} signal={signal} />
+                ))}
             </div>
           )}
+
           {activeTab === 'opportunities' && (
             <OpportunityList opportunities={opportunities} />
           )}
+
           {activeTab === 'completed' && (
             <div className="space-y-4">
-              {signals.filter(s => s.status === 'EXIT' || s.status === 'ABORTED').map(signal => (
-                <SignalCard key={signal.id} signal={signal} />
-              ))}
+              {signals
+                .filter(
+                  s => s.status === 'EXIT' || s.status === 'ABORTED'
+                )
+                .map(signal => (
+                  <SignalCard key={signal.id} signal={signal} />
+                ))}
             </div>
           )}
         </div>

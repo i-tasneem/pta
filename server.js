@@ -1,4 +1,9 @@
 // server.js
+
+require('dotenv').config();
+
+
+
 const DhanProvider = require('./providers/DhanProvider');
 const MockProvider = require('./providers/MockProvider');
 const EventNormalizer = require('./providers/EventNormalizer');
