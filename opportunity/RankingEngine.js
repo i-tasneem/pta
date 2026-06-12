@@ -62,11 +62,11 @@ class RankingEngine {
     const top10 = await this.eventBus.zrevrange(this.schema.leaderboard(), 0, 9, true);
 
     await this.eventBus.publish('ranking:update', '', {
-      top10: top10.map((item, i) => ({
+      top10: top10.map((entry, i) => ({
         rank: i + 1,
-        opportunityId: i % 2 === 0 ? item : '',
-        score: i % 2 === 1 ? parseFloat(item) : 0
-      })).filter((_, i) => i % 2 === 0)
+        opportunityId: entry.value,
+        score: entry.score
+      }))
     });
   }
 
@@ -74,18 +74,16 @@ class RankingEngine {
     const topN = await this.eventBus.zrevrange(this.schema.leaderboard(), 0, n - 1, true);
     const opportunities = [];
 
-    for (let i = 0; i < topN.length; i += 2) {
-      const opportunityId = topN[i];
-      const score = parseFloat(topN[i + 1]);
-      const parts = opportunityId.split('|');
-      const instrument = parts[0];
+    for (let i = 0; i < topN.length; i++) {
+      const { value: opportunityId, score } = topN[i];
+      const instrument = opportunityId.split('|')[0];
 
       const opp = await this.eventBus.hgetall(this.schema.opportunity(instrument));
       if (opp && Object.keys(opp).length > 0) {
         opportunities.push({
           ...opp,
           score,
-          rank: i / 2 + 1,
+          rank: i + 1,
           opportunityId
         });
       }

@@ -107,6 +107,21 @@ class ScannerOrchestrator {
     }
   }
 
+  // After history bootstrap: compute indicators for every timeframe so the
+  // pipeline is warm before the first live candle closes
+  async primeIndicators(symbol) {
+    const scanners = this.instruments.get(symbol);
+    if (!scanners) return;
+
+    for (const tf of this.config.scanners.candle.timeframes) {
+      await scanners.candle.recomputeIndicators(tf);
+    }
+
+    // Derive trend/momentum state from the freshly written indicators
+    await scanners.trend.onIndicatorUpdate({});
+    await scanners.momentum.onIndicatorUpdate({});
+  }
+
   async onOptionChainFromProvider(chain) {
     const symbol = chain.instrument;
     const scanners = this.instruments.get(symbol);

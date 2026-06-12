@@ -17,9 +17,15 @@ class CandleScanner {
       await this.buildHigherTimeframes(candle);
     }
 
-    // Read last N candles for this timeframe
+    await this.recomputeIndicators(tf);
+  }
+
+  // Compute indicators from whatever is in the candle stream; also used to
+  // prime indicators from bootstrapped history without synthetic candle events
+  async recomputeIndicators(tf) {
     const streamKey = this.schema.ohlc(tf, this.instrument);
-    const rawCandles = await this.eventBus.xrange(streamKey, '-', '+', 50);
+    const rawCandles = await this.eventBus.xlatest(streamKey, 50);
+    if (!rawCandles || rawCandles.length === 0) return;
 
     // Calculate indicators
     const ema5 = this.indicators.EMA(rawCandles, 5);

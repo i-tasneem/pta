@@ -4,6 +4,7 @@
 const MarketDataProvider = require('./MarketDataProvider');
 const axios = require('axios');
 const WebSocket = require('ws');
+const readline = require('readline');
 
 // Feed response codes (Dhan v2 market feed)
 const FEED = {
@@ -24,8 +25,9 @@ class DhanProvider extends MarketDataProvider {
     this.rateLimit = config.rateLimit || 25;
     this.ws = null;
     this.subscribedInstruments = new Set();
-    this.securityMap = new Map();   // securityId -> { symbol, exchangeSegment }
+    this.securityMap = new Map();   // securityId -> { symbol, exchangeSegment, role }
     this.tickState = new Map();     // securityId -> accumulated tick fields
+    this.futuresState = new Map();  // index symbol -> merged futures quote state
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 10;
     this.reconnectDelay = 1000;
@@ -186,8 +188,8 @@ class DhanProvider extends MarketDataProvider {
           });
           break;
 
-        case FEED.FULL:
-          this.updateTick(securityId, {
+        case FEED.FULL: {
+          const fields = {
             lastPrice: buf.readFloatLE(8),
             timestamp: buf.readUInt32LE(14) * 1000,
             avgPrice: buf.readFloatLE(18),
@@ -199,8 +201,15 @@ class DhanProvider extends MarketDataProvider {
             dayClose: buf.readFloatLE(50),
             dayHigh: buf.readFloatLE(54),
             dayLow: buf.readFloatLE(58)
-          });
+          };
+          // Top of 5-level market depth (20 bytes per level from offset 62)
+          if (buf.length >= 82) {
+            fields.bidPrice = buf.readFloatLE(74);
+            fields.askPrice = buf.readFloatLE(78);
+          }
+          this.updateTick(securityId, fields);
           break;
+        }
 
         case FEED.PREV_CLOSE:
           this.updateTick(securityId, {
@@ -237,23 +246,46 @@ class DhanProvider extends MarketDataProvider {
     Object.assign(state, fields);
     this.tickState.set(securityId, state);
 
+    // Futures legs never emit; they feed volume/spread into the index tick.
+    // Feed volume is cumulative for the day — convert to deltas here.
+    if (mapping.role === 'FUT') {
+      const fut = this.futuresState.get(mapping.symbol) || { lastCumVolume: 0, pendingVolume: 0 };
+      if (fields.volume !== undefined) {
+        if (fut.lastCumVolume > 0 && fields.volume > fut.lastCumVolume) {
+          fut.pendingVolume += fields.volume - fut.lastCumVolume;
+        }
+        fut.lastCumVolume = fields.volume;
+      }
+      if (fields.bidPrice) fut.bid = fields.bidPrice;
+      if (fields.askPrice) fut.ask = fields.askPrice;
+      if (fields.avgPrice) fut.atp = fields.avgPrice;
+      this.futuresState.set(mapping.symbol, fut);
+      return;
+    }
+
     if (!emitTick || !state.lastPrice) return;
 
     const prevClose = state.previousClose || 0;
     const change = prevClose ? state.lastPrice - prevClose : 0;
+
+    // Indices trade no volume and quote no spread; both come from the
+    // paired current-month future
+    const fut = this.futuresState.get(mapping.symbol);
+    const volumeDelta = fut ? fut.pendingVolume : 0;
+    if (fut) fut.pendingVolume = 0;
 
     this.lastTickAt = Date.now();
     this.emit('tick', {
       tradingSymbol: mapping.symbol,
       securityId,
       lastPrice: state.lastPrice,
-      bidPrice: state.bidPrice || 0,
-      askPrice: state.askPrice || 0,
-      totalTradedQty: state.volume || 0,
+      bidPrice: fut?.bid || state.bidPrice || 0,
+      askPrice: fut?.ask || state.askPrice || 0,
+      volume: volumeDelta,
       openInterest: state.openInterest || 0,
       change,
       changePercent: prevClose ? (change / prevClose) * 100 : 0,
-      vwap: state.avgPrice || 0,
+      vwap: fut?.atp || state.avgPrice || 0,
       dayHigh: state.dayHigh || 0,
       dayLow: state.dayLow || 0,
       dayOpen: state.dayOpen || 0,
@@ -289,25 +321,39 @@ class DhanProvider extends MarketDataProvider {
   }
 
   async resubscribe() {
-    const instruments = Array.from(this.securityMap.entries()).map(
-      ([securityId, m]) => ({ symbol: m.symbol, securityId, exchangeSegment: m.exchangeSegment })
-    );
-    if (instruments.length > 0) {
-      await this.subscribeTicks(instruments);
+    const byRole = { INDEX: [], FUT: [] };
+    for (const [securityId, m] of this.securityMap.entries()) {
+      byRole[m.role === 'FUT' ? 'FUT' : 'INDEX'].push({
+        symbol: m.symbol, securityId, exchangeSegment: m.exchangeSegment
+      });
+    }
+    if (byRole.INDEX.length > 0) await this.subscribeTicks(byRole.INDEX);
+    if (byRole.FUT.length > 0) await this.subscribeFutures(byRole.FUT);
+  }
+
+  _sendSubscription(list, requestCodes) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket not connected');
+    }
+    if (list.length === 0) return;
+
+    for (const requestCode of requestCodes) {
+      this.ws.send(JSON.stringify({
+        RequestCode: requestCode,
+        InstrumentCount: list.length,
+        InstrumentList: list
+      }));
     }
   }
 
   async subscribeTicks(instruments) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket not connected');
-    }
-
     const list = instruments
       .filter(i => i.securityId)
       .map(i => {
         this.securityMap.set(String(i.securityId), {
           symbol: i.symbol,
-          exchangeSegment: i.exchangeSegment || 'IDX_I'
+          exchangeSegment: i.exchangeSegment || 'IDX_I',
+          role: 'INDEX'
         });
         this.subscribedInstruments.add(i.symbol);
         return {
@@ -316,16 +362,28 @@ class DhanProvider extends MarketDataProvider {
         };
       });
 
-    if (list.length === 0) return;
+    // RequestCode 15 = ticker, 17 = quote; quote carries OHLC
+    this._sendSubscription(list, [15, 17]);
+  }
 
-    // RequestCode 15 = ticker, 17 = quote; subscribe to quote for OHLC + volume
-    for (const requestCode of [15, 17]) {
-      this.ws.send(JSON.stringify({
-        RequestCode: requestCode,
-        InstrumentCount: list.length,
-        InstrumentList: list
-      }));
-    }
+  // Paired index futures: subscribed in Full mode (21) for depth, providing
+  // the volume/spread that cash indices don't have. symbol = the INDEX symbol.
+  async subscribeFutures(pairs) {
+    const list = pairs
+      .filter(p => p.securityId)
+      .map(p => {
+        this.securityMap.set(String(p.securityId), {
+          symbol: p.symbol,
+          exchangeSegment: p.exchangeSegment || 'NSE_FNO',
+          role: 'FUT'
+        });
+        return {
+          ExchangeSegment: p.exchangeSegment || 'NSE_FNO',
+          SecurityId: String(p.securityId)
+        };
+      });
+
+    this._sendSubscription(list, [21]);
   }
 
   async unsubscribeTicks(instruments) {
@@ -408,16 +466,75 @@ class DhanProvider extends MarketDataProvider {
     return response.data?.data || [];
   }
 
-  async getHistoricalData(securityId, interval, from, to) {
+  // Intraday history, normalized to [{ timestamp(ms), open, high, low, close, volume }]
+  async getIntradayCandles(securityId, exchangeSegment, instrumentType, fromDate, toDate, interval = '1') {
     const response = await this._request('POST', '/v2/charts/intraday', {
       securityId: String(securityId),
-      exchangeSegment: 'IDX_I',
-      instrument: 'INDEX',
+      exchangeSegment,
+      instrument: instrumentType,
       interval: String(interval),
-      fromDate: from,
-      toDate: to
+      fromDate,
+      toDate
     });
-    return response.data;
+
+    const d = response.data || {};
+    const candles = [];
+    const n = (d.timestamp || []).length;
+    for (let i = 0; i < n; i++) {
+      candles.push({
+        timestamp: d.timestamp[i] * 1000,
+        open: d.open[i],
+        high: d.high[i],
+        low: d.low[i],
+        close: d.close[i],
+        volume: d.volume?.[i] || 0
+      });
+    }
+    return candles;
+  }
+
+  // Streams the scrip master (too large to buffer) and resolves the
+  // nearest-expiry index future per underlying symbol
+  async findIndexFutures(symbols) {
+    const url = 'https://images.dhan.co/api-data/api-scrip-master.csv';
+    const response = await axios.get(url, { responseType: 'stream' });
+    const rl = readline.createInterface({ input: response.data, crlfDelay: Infinity });
+
+    const wanted = new Set(symbols);
+    const today = new Date().toISOString().slice(0, 10);
+    const best = new Map(); // symbol -> { securityId, exchangeSegment, expiry }
+    let cols = null;
+
+    for await (const line of rl) {
+      const values = line.split(',').map(v => v.replace(/^"|"$/g, '').trim());
+
+      if (!cols) {
+        cols = {};
+        values.forEach((h, i) => { cols[h] = i; });
+        continue;
+      }
+
+      const instrumentName = values[cols['SEM_INSTRUMENT_NAME']] || values[cols['SEM_EXCH_INSTRUMENT_TYPE']];
+      if (instrumentName !== 'FUTIDX') continue;
+
+      const underlying = values[cols['SM_SYMBOL_NAME']] || '';
+      if (!wanted.has(underlying)) continue;
+
+      const expiry = (values[cols['SEM_EXPIRY_DATE']] || '').slice(0, 10);
+      if (!expiry || expiry < today) continue;
+
+      const exch = values[cols['SEM_EXM_EXCH_ID']] || 'NSE';
+      const current = best.get(underlying);
+      if (!current || expiry < current.expiry) {
+        best.set(underlying, {
+          securityId: values[cols['SEM_SMST_SECURITY_ID']],
+          exchangeSegment: exch === 'BSE' ? 'BSE_FNO' : 'NSE_FNO',
+          expiry
+        });
+      }
+    }
+
+    return Object.fromEntries(best);
   }
 
   async getInstrumentMaster() {

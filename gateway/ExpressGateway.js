@@ -116,9 +116,9 @@ class ExpressGateway {
     // OI / PCR history for trend charts
     this.app.get('/api/oi/:instrument/history', async (req, res) => {
       const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
-      const entries = await this.eventBus.xrange(
+      const entries = await this.eventBus.xlatest(
         this.schema.oiHistory(req.params.instrument),
-        '-', '+', limit
+        limit
       );
 
       const history = (entries || []).map(e => ({
@@ -138,9 +138,9 @@ class ExpressGateway {
       const tf = ['1m', '3m', '5m', '15m', '30m'].includes(req.query.tf)
         ? req.query.tf : '5m';
       const limit = Math.min(parseInt(req.query.limit) || 50, 200);
-      const entries = await this.eventBus.xrange(
+      const entries = await this.eventBus.xlatest(
         this.schema.ohlc(tf, req.params.instrument),
-        '-', '+', limit
+        limit
       );
 
       const volumes = (entries || []).map(e => ({

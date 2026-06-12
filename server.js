@@ -87,10 +87,10 @@ class PTAServer {
     this.opportunity = new OpportunityQualityEngine(this.eventBus, this.schema, config);
     this.ranking = new RankingEngine(this.eventBus, this.schema, config);
     this.entryTrigger = new EntryTriggerEngine(this.eventBus, this.schema, config);
-    this.signalLifecycle = new SignalLifecycleEngine(this.eventBus, this.schema, config);
+    this.archiver = new SignalArchiver(config);
+    this.signalLifecycle = new SignalLifecycleEngine(this.eventBus, this.schema, config, this.archiver);
     this.presentation = new SignalPresentationService(this.schema, this.eventBus, config);
     this.notification = new NotificationEngine(this.eventBus, this.schema, config);
-    this.archiver = new SignalArchiver(config);
 
     await this.scanners.initialize(config.instruments.indices);
     await this.ranking.initialize();
@@ -111,9 +111,15 @@ class PTAServer {
 
     const instruments = config.instruments.indices;
 
+    // Resolve current-month index futures (volume/spread source for indices)
+    this.futuresPairs = await this.discoverFutures(instruments);
+
     const connectProvider = async () => {
       await this.provider.connect();
       await this.provider.subscribeTicks(instruments);
+      if (this.futuresPairs.length > 0) {
+        await this.provider.subscribeFutures(this.futuresPairs);
+      }
       console.log('✓ Provider connected');
     };
 
@@ -143,6 +149,10 @@ class PTAServer {
 
     this.provider.on('ws:error', (err) => console.error('Provider WS error:', err.message));
     this.provider.on('ws:disconnected', () => console.warn('Provider WS disconnected'));
+
+    // Seed candle streams from broker history so indicators are warm at
+    // boot instead of hours into the session
+    await this.bootstrapHistory(instruments);
 
     // Poll option chains round-robin (Dhan limit: 1 chain request / 3s)
     this.startChainPolling(instruments);
@@ -188,6 +198,120 @@ class PTAServer {
         }
       }
     }, 10000);
+  }
+
+  async discoverFutures(instruments) {
+    const cacheKey = `${config.redis.keyPrefix}sys:futures:map`;
+    try {
+      const cached = await this.eventBus.client.get(cacheKey);
+      if (cached) {
+        const map = JSON.parse(cached);
+        return this.futuresMapToPairs(map, instruments);
+      }
+
+      const symbols = instruments.map(i => i.symbol);
+      const map = await this.provider.findIndexFutures(symbols);
+      if (Object.keys(map).length > 0) {
+        await this.eventBus.client.set(cacheKey, JSON.stringify(map), { EX: 24 * 60 * 60 });
+        console.log('✓ Index futures resolved:', Object.entries(map).map(([s, f]) => `${s}=${f.securityId}(${f.expiry})`).join(', '));
+      }
+      return this.futuresMapToPairs(map, instruments);
+    } catch (err) {
+      console.error('Futures discovery failed (volume/spread degraded):', err.message);
+      return [];
+    }
+  }
+
+  futuresMapToPairs(map, instruments) {
+    return instruments
+      .filter(i => map[i.symbol])
+      .map(i => ({
+        symbol: i.symbol,
+        securityId: map[i.symbol].securityId,
+        exchangeSegment: map[i.symbol].exchangeSegment
+      }));
+  }
+
+  async bootstrapHistory(instruments) {
+    if (typeof this.provider.getIntradayCandles !== 'function') return;
+
+    const TFS = { '3m': 180000, '5m': 300000, '15m': 900000, '30m': 1800000 };
+    const toDate = new Date().toISOString().slice(0, 10);
+    const fromDate = new Date(Date.now() - 9 * 86400000).toISOString().slice(0, 10);
+    const futBySymbol = Object.fromEntries((this.futuresPairs || []).map(p => [p.symbol, p]));
+
+    for (const inst of instruments) {
+      try {
+        const candles = await this.provider.getIntradayCandles(
+          inst.securityId, inst.exchangeSegment || 'IDX_I', 'INDEX', fromDate, toDate
+        );
+        if (!candles || candles.length === 0) continue;
+
+        // Indices carry no volume; merge it from the paired future's history
+        const fut = futBySymbol[inst.symbol];
+        if (fut) {
+          await new Promise(r => setTimeout(r, 1200));
+          try {
+            const futCandles = await this.provider.getIntradayCandles(
+              fut.securityId, fut.exchangeSegment, 'FUTIDX', fromDate, toDate
+            );
+            const volByTs = new Map(futCandles.map(c => [c.timestamp, c.volume]));
+            for (const c of candles) {
+              c.volume = volByTs.get(c.timestamp) || c.volume;
+            }
+          } catch (err) {
+            console.warn(`Futures history ${inst.symbol}:`, err.message);
+          }
+        }
+
+        await this.seedCandleStream('1m', inst.symbol, candles.slice(-500));
+        for (const [tf, intervalMs] of Object.entries(TFS)) {
+          const aggregated = this.aggregateCandles(candles, intervalMs);
+          await this.seedCandleStream(tf, inst.symbol, aggregated.slice(-500));
+        }
+
+        await this.scanners.primeIndicators(inst.symbol);
+        console.log(`✓ History bootstrapped: ${inst.symbol} (${candles.length} 1m candles)`);
+      } catch (err) {
+        const detail = err.response ? JSON.stringify(err.response.data) : err.message;
+        console.error(`History bootstrap ${inst.symbol}:`, detail);
+      }
+
+      // Historical data API is rate limited; pace the requests
+      await new Promise(r => setTimeout(r, 1200));
+    }
+  }
+
+  aggregateCandles(candles1m, intervalMs) {
+    const buckets = new Map();
+    for (const c of candles1m) {
+      const start = Math.floor(c.timestamp / intervalMs) * intervalMs;
+      const b = buckets.get(start);
+      if (!b) {
+        buckets.set(start, { timestamp: start, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume });
+      } else {
+        b.high = Math.max(b.high, c.high);
+        b.low = Math.min(b.low, c.low);
+        b.close = c.close;
+        b.volume += c.volume;
+      }
+    }
+    return Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  async seedCandleStream(tf, symbol, candles) {
+    const key = this.schema.ohlc(tf, symbol);
+    await this.eventBus.del(key);
+    for (const c of candles) {
+      await this.eventBus.xadd(key, '*', {
+        open: c.open.toFixed(2),
+        high: c.high.toFixed(2),
+        low: c.low.toFixed(2),
+        close: c.close.toFixed(2),
+        volume: c.volume,
+        timestamp: c.timestamp
+      });
+    }
   }
 
   retryProviderInBackground(connectProvider, err) {

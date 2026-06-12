@@ -59,11 +59,15 @@ class OpportunityQualityEngine {
     const stopZone = this.calculateStopZone(ltp, atr, direction);
     const targetZone = this.calculateTargetZone(ltp, atr, direction);
 
-    const opportunityId = `${instrument}|${direction}|${Date.now()}`;
+    // Stable id (no timestamp): zadd updates the same member in place and
+    // Gate 6 can look the entry up again
+    const opportunityId = `${instrument}|${direction}`;
+    const oppositeId = `${instrument}|${direction === 'CE' ? 'PE' : 'CE'}`;
 
     // Write to Redis
     await this.eventBus.hset(this.schema.opportunity(instrument), {
       instrument,
+      opportunityId,
       score: finalScore.toFixed(2),
       direction,
       regime,
@@ -86,7 +90,8 @@ class OpportunityQualityEngine {
 
     await this.eventBus.expire(this.schema.opportunity(instrument), 300);
 
-    // Update leaderboard
+    // Update leaderboard; the opposite direction can't be valid simultaneously
+    await this.eventBus.zrem(this.schema.leaderboard(), oppositeId);
     if (finalScore >= this.config.minScore) {
       await this.eventBus.zadd(this.schema.leaderboard(), finalScore, opportunityId);
     } else {

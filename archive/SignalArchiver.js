@@ -90,6 +90,19 @@ class SignalArchiver {
     this.queue = [];
   }
 
+  recordOutcome(outcome) {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO signal_outcomes (
+        id, instrument, type, direction, outcome,
+        entry_price, exit_price, pnl, duration_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      outcome.id, outcome.instrument, outcome.type, outcome.direction,
+      outcome.outcome, outcome.entryPrice ?? null, outcome.exitPrice ?? null,
+      outcome.pnl ?? null, outcome.durationMs ?? null
+    );
+  }
+
   getAllSignalHistory(limit = 100) {
     return this.db.prepare('SELECT * FROM signal_audit ORDER BY triggered_at DESC LIMIT ?').all(limit);
   }

@@ -110,6 +110,12 @@ class EventBus {
     return await this.client.xRange(key, start, end, opts);
   }
 
+  // Latest N entries in chronological order (xRange + COUNT returns oldest N)
+  async xlatest(key, count) {
+    const entries = await this.client.xRevRange(key, '+', '-', { COUNT: count });
+    return (entries || []).reverse();
+  }
+
   async xtrim(key, strategy, threshold) {
     return await this.client.xTrim(key, strategy, threshold);
   }
@@ -119,13 +125,21 @@ class EventBus {
     return await this.client.zAdd(key, { score, value: member });
   }
 
+  // With scores: returns [{ value, score }] — node-redis v4 ignores a
+  // WITH_SCORES option on zRange, so the dedicated method is required
   async zrevrange(key, start, stop, withScores = false) {
-    const opts = withScores ? { WITH_SCORES: true } : {};
-    return await this.client.zRange(key, start, stop, { REV: true, ...opts });
+    if (withScores) {
+      return await this.client.zRangeWithScores(key, start, stop, { REV: true });
+    }
+    return await this.client.zRange(key, start, stop, { REV: true });
   }
 
   async zrevrank(key, member) {
-    return await this.client.zRank(key, member, { REV: true });
+    // node-redis v4 zRank ignores a REV option; derive the reverse rank
+    const rank = await this.client.zRank(key, member);
+    if (rank === null || rank === undefined) return null;
+    const card = await this.client.zCard(key);
+    return card - 1 - rank;
   }
 
   async zrem(key, member) {

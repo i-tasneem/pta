@@ -16,10 +16,10 @@ class Gate6RankingValidation extends DecisionGate {
       return this.createFailResult(`Opportunity score ${score.toFixed(1)} below threshold ${this.config.minScore}`);
     }
 
-    // Top 10 check
-    const opportunityId = `${instrument}|${opportunity.direction}|${opportunity.timestamp || Date.now()}`;
+    // Top 10 check — use the stored id, never reconstruct it
+    const opportunityId = opportunity.opportunityId || `${instrument}|${opportunity.direction}`;
     const rank = await eventBus.zrevrank(schema.leaderboard(), opportunityId);
-    if (rank === null || rank > this.config.maxRank) {
+    if (rank === null || rank === undefined || rank > this.config.maxRank) {
       return this.createFailResult(`Opportunity not in top ${this.config.maxRank} (rank: ${rank !== null ? rank + 1 : 'N/A'})`);
     }
 

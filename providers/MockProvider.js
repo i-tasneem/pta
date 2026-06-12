@@ -154,6 +154,18 @@ class MockProvider extends MarketDataProvider {
     return this.generateMockHistoricalData(interval);
   }
 
+  async getIntradayCandles(securityId, exchangeSegment, instrumentType, fromDate, toDate, interval = '1') {
+    return this.generateMockHistoricalData(`${interval}m`);
+  }
+
+  async findIndexFutures(symbols) {
+    return {};
+  }
+
+  async subscribeFutures(pairs) {
+    // No futures in mock mode
+  }
+
   async getInstrumentMaster() {
     return [];
   }

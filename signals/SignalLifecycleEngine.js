@@ -2,10 +2,11 @@
 const { SignalStates } = require('./SignalTypes');
 
 class SignalLifecycleEngine {
-  constructor(eventBus, redisSchema, config) {
+  constructor(eventBus, redisSchema, config, archiver = null) {
     this.eventBus = eventBus;
     this.schema = redisSchema;
     this.config = config.signal;
+    this.archiver = archiver;
     this.activeSignals = new Map();
     this.monitors = new Map();
     this.consumerGroup = 'cg-signal';
@@ -56,9 +57,16 @@ class SignalLifecycleEngine {
 
   async onTrigger(signal) {
     signal.state = SignalStates.ACTIVE;
-    await this.eventBus.hset(this.schema.signal(signal.instrument, signal.id), 'state', SignalStates.ACTIVE);
+    await this.eventBus.hset(this.schema.signal(signal.instrument, signal.id), { state: SignalStates.ACTIVE });
     this.activeSignals.set(signal.id, signal);
     await this.emitStateChange(signal, SignalStates.NEW, SignalStates.ACTIVE);
+
+    if (this.archiver) {
+      try { this.archiver.queueSignal(signal); } catch (err) {
+        console.error('Signal archive failed:', err.message);
+      }
+    }
+
     this.monitorSignal(signal);
   }
 
@@ -128,11 +136,43 @@ class SignalLifecycleEngine {
     const oldState = signal.state;
     signal.state = newState;
     await this.eventBus.hset(this.schema.signal(signal.instrument, signal.id), { state: newState, ...metadata });
+    // Keep the active-signal key in sync so the UI and Gate 6 see live state
+    await this.eventBus.hset(this.schema.activeSignal(signal.instrument), { state: newState, ...metadata });
     await this.emitStateChange(signal, oldState, newState, metadata);
 
     if ([SignalStates.EXIT, SignalStates.ABORTED].includes(newState)) {
       await this.archiveSignal(signal);
+      this.recordOutcome(signal, newState, metadata);
+      await this.eventBus.del(this.schema.activeSignal(signal.instrument));
       this.activeSignals.delete(signal.id);
+    }
+  }
+
+  recordOutcome(signal, finalState, metadata) {
+    if (!this.archiver) return;
+    try {
+      const entryZone = JSON.parse(signal.entryZone || '[]');
+      const entryPrice = entryZone.length ? (entryZone[0] + entryZone[entryZone.length - 1]) / 2 : null;
+      const exitPrice = metadata.exitPrice ?? null;
+
+      let pnl = null;
+      if (entryPrice !== null && exitPrice !== null) {
+        pnl = signal.direction === 'CE' ? exitPrice - entryPrice : entryPrice - exitPrice;
+      }
+
+      this.archiver.recordOutcome({
+        id: signal.id,
+        instrument: signal.instrument,
+        type: signal.type,
+        direction: signal.direction,
+        outcome: metadata.outcome || metadata.reason || finalState,
+        entryPrice,
+        exitPrice,
+        pnl,
+        durationMs: signal.triggeredAt ? Date.now() - parseInt(signal.triggeredAt) : null
+      });
+    } catch (err) {
+      console.error('Outcome archive failed:', err.message);
     }
   }
 
