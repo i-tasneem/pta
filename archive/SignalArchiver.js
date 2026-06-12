@@ -90,6 +90,14 @@ class SignalArchiver {
     this.queue = [];
   }
 
+  getAllSignalHistory(limit = 100) {
+    return this.db.prepare('SELECT * FROM signal_audit ORDER BY triggered_at DESC LIMIT ?').all(limit);
+  }
+
+  getAllOutcomes(limit = 500) {
+    return this.db.prepare('SELECT * FROM signal_outcomes ORDER BY created_at DESC LIMIT ?').all(limit);
+  }
+
   getSignalHistory(instrument, limit = 100) {
     return this.db.prepare('SELECT * FROM signal_audit WHERE instrument = ? ORDER BY triggered_at DESC LIMIT ?').all(instrument, limit);
   }

@@ -135,7 +135,7 @@ class PTAServer {
     await this.archiver.start();
 
     // Start HTTP + WS gateway
-    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config);
+    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver);
     const port = process.env.PORT || 3000;
     const server = expressGateway.listen(port);
 

@@ -1,91 +1,132 @@
 import React, { useState } from 'react';
+import { Badge, Card } from './ui';
 
-function SignalCard({ signal }) {
-  const [showDetails, setShowDetails] = useState(false);
-  const isTriggered = signal.status === 'TRIGGERED';
-  const isExit = signal.status === 'EXIT' || signal.status === 'ABORTED';
-  const scoreNum = parseInt(signal.confidence?.replace('%', '') || 0);
-  const scoreClass = scoreNum >= 90 ? 'score-high' : scoreNum >= 70 ? 'score-medium' : 'score-low';
+const STATUS_STYLES = {
+  TRIGGERED: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+  WATCH:     'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  HOLD:      'bg-sky-500/15 text-sky-400 border-sky-500/30',
+  EXIT:      'bg-slate-500/15 text-slate-400 border-slate-500/30',
+  ABORTED:   'bg-rose-500/15 text-rose-400 border-rose-500/30'
+};
 
+function GateRow({ name, result }) {
+  if (!result || typeof result !== 'object') return null;
+  const passed = result.passed === true || result.passed === 'true';
   return (
-    <div className={`signal-card bg-gray-800 rounded-xl p-5 border ${isTriggered ? 'border-emerald-500 triggered-pulse' : 'border-gray-700'} ${isExit ? 'opacity-60' : ''}`}>
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <h3 className="text-xl font-bold">{signal.instrument}</h3>
-          <span className={`badge-${signal.direction} px-3 py-1 rounded-full text-sm font-bold`}>
-            {signal.action}
-          </span>
-        </div>
-        <div className="text-right">
-          <div className={`text-2xl font-bold ${scoreClass}`}>{signal.confidence}</div>
-          <div className="text-xs text-gray-400">Confidence</div>
-        </div>
+    <div className="flex items-start gap-2 text-xs py-1">
+      <span className={passed ? 'text-emerald-400' : 'text-rose-400'}>{passed ? '✓' : '✗'}</span>
+      <div>
+        <span className="text-slate-300 font-medium">{name}</span>
+        {result.reason && <span className="text-slate-500"> — {result.reason}</span>}
       </div>
-
-      <div className="grid grid-cols-3 gap-4 mb-4">
-        <div className="bg-gray-900 rounded-lg p-3">
-          <div className="text-xs text-gray-400 mb-1">Entry</div>
-          <div className="text-lg font-semibold text-emerald-400">{signal.entry}</div>
-        </div>
-        <div className="bg-gray-900 rounded-lg p-3">
-          <div className="text-xs text-gray-400 mb-1">SL</div>
-          <div className="text-lg font-semibold text-red-400">{signal.stop}</div>
-        </div>
-        <div className="bg-gray-900 rounded-lg p-3">
-          <div className="text-xs text-gray-400 mb-1">Target</div>
-          <div className="text-lg font-semibold text-emerald-400">{signal.target}</div>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4 text-sm">
-          <span className="text-gray-400">Status: <span className="text-white font-medium">{signal.status}</span></span>
-          <span className="text-gray-400">Triggered: <span className="text-white">{signal.triggeredAt}</span></span>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="bg-gray-700 px-3 py-1 rounded text-sm">{signal.reason}</span>
-          {signal.details && (
-            <button onClick={() => setShowDetails(!showDetails)} className="text-emerald-400 text-sm hover:text-emerald-300 transition">
-              {showDetails ? 'View Less ▲' : 'View Details ▼'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {showDetails && signal.details && (
-        <div className="mt-4 bg-gray-900 rounded-lg p-4 text-sm">
-          <h4 className="font-bold text-gray-300 mb-3">Signal Details</h4>
-          <div className="grid grid-cols-2 gap-4">
-            {signal.details.trendAnalysis && (
-              <div><div className="text-gray-400 mb-1">Trend Score</div><div className="text-white">{signal.details.trendAnalysis.trendScore || 'N/A'}/100</div></div>
-            )}
-            {signal.details.oiAnalysis && (
-              <div><div className="text-gray-400 mb-1">OI Pattern</div><div className="text-white">{signal.details.oiAnalysis.oiPattern || 'N/A'}</div></div>
-            )}
-            {signal.details.volumeAnalysis && (
-              <div><div className="text-gray-400 mb-1">Volume Strength</div><div className="text-white">{signal.details.volumeAnalysis.volumeStrength || 'N/A'}/100</div></div>
-            )}
-            {signal.details.regimeAnalysis && (
-              <div><div className="text-gray-400 mb-1">Regime</div><div className="text-white">{signal.details.regimeAnalysis.regime || 'N/A'} ({Math.round((signal.details.regimeAnalysis.regimeConfidence || 0) * 100)}%)</div></div>
-            )}
-          </div>
-          {signal.details.gateResults && (
-            <div className="mt-3">
-              <div className="text-gray-400 mb-2">Gate Results</div>
-              <div className="space-y-1">
-                {signal.details.gateResults.map((g, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <span className={g.pass ? 'text-emerald-400' : 'text-red-400'}>{g.pass ? '✓' : '✗'}</span>
-                    <span className="text-gray-300">Gate {g.gate}: {g.reason}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
 
-export default SignalCard;
+const GATE_LABELS = {
+  gate1: 'Regime Validation',
+  gate2: 'Trend Alignment',
+  gate3: 'Momentum Validation',
+  gate4: 'Option Chain (OI)',
+  gate5: 'Entry Trigger',
+  gate6: 'Ranking Quality'
+};
+
+// Signal card with full WHY transparency: reason + gate breakdown + analyses.
+export default function SignalCard({ signal }) {
+  const [showWhy, setShowWhy] = useState(false);
+  const isCE = signal.direction === 'CE';
+  const details = signal.details || {};
+  const gates = details.gateResults || {};
+  const hasGates = Object.keys(gates).length > 0;
+
+  const analyses = [
+    ['Trend', details.trendAnalysis],
+    ['OI', details.oiAnalysis],
+    ['Volume', details.volumeAnalysis],
+    ['Regime', details.regimeAnalysis],
+    ['Liquidity', details.liquidityAnalysis]
+  ].filter(([, a]) => a && Object.keys(a).length > 0);
+
+  return (
+    <Card>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-bold text-slate-100">{signal.instrument}</span>
+            <Badge cls={isCE
+              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+              : 'bg-rose-500/20 text-rose-300 border-rose-500/40'}>
+              {isCE ? '▲ CALL' : '▼ PUT'} · {signal.type}
+            </Badge>
+            <Badge cls={STATUS_STYLES[signal.status] || STATUS_STYLES.EXIT}>{signal.status}</Badge>
+          </div>
+          <div className="text-xs text-slate-500 mt-1">
+            {signal.triggeredAt && <span>Triggered {signal.triggeredAt} · </span>}
+            Confidence <span className="text-slate-300 font-semibold">{signal.confidence}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Why (headline reason) */}
+      <div className="mt-2 p-2 rounded-lg bg-slate-800/60 text-sm text-slate-300">
+        <span className="text-slate-500 text-xs uppercase tracking-wider mr-2">Why</span>
+        {signal.reason}
+      </div>
+
+      {/* Zones */}
+      <div className="grid grid-cols-3 gap-2 mt-3 text-center">
+        <div className="rounded-lg bg-slate-800/40 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500">Entry</div>
+          <div className="text-xs font-semibold text-sky-300">{signal.entry}</div>
+        </div>
+        <div className="rounded-lg bg-slate-800/40 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500">Stop</div>
+          <div className="text-xs font-semibold text-rose-300">{signal.stop}</div>
+        </div>
+        <div className="rounded-lg bg-slate-800/40 py-2">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500">Target</div>
+          <div className="text-xs font-semibold text-emerald-300">{signal.target}</div>
+        </div>
+      </div>
+
+      {/* Full WHY breakdown */}
+      {(hasGates || analyses.length > 0) && (
+        <>
+          <button
+            onClick={() => setShowWhy(!showWhy)}
+            className="w-full mt-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition">
+            {showWhy ? 'Hide breakdown' : 'Why was this generated?'}
+          </button>
+
+          {showWhy && (
+            <div className="mt-3 space-y-3">
+              {hasGates && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Validation Gates</div>
+                  {Object.entries(GATE_LABELS).map(([key, label]) =>
+                    <GateRow key={key} name={label} result={gates[key]} />
+                  )}
+                </div>
+              )}
+
+              {analyses.map(([name, analysis]) => (
+                <div key={name}>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">{name} Analysis</div>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
+                    {Object.entries(analysis).map(([k, v]) => (
+                      <div key={k} className="flex justify-between gap-2">
+                        <span className="text-slate-500">{k}</span>
+                        <span className="text-slate-300 truncate">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}

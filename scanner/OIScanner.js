@@ -51,6 +51,9 @@ class OIScanner {
     // Strike concentration
     const concentration = this.calculateStrikeConcentration(chainData);
 
+    // Max pain
+    const maxPain = this.calculateMaxPain(chainData);
+
     // Write to market_state
     await this.eventBus.hset(this.schema.marketState(this.instrument), {
       oiVelocity: velocity.toFixed(2),
@@ -65,7 +68,9 @@ class OIScanner {
       strikeConcentration: concentration.toFixed(2),
       totalCeOi: chainData.totalCeOi || 0,
       totalPeOi: chainData.totalPeOi || 0,
-      atmStrike: chainData.atmStrike || 0
+      atmStrike: chainData.atmStrike || 0,
+      maxPain,
+      spotLtp: chainData.spotLtp || 0
     });
 
     // Write to OI history stream
@@ -229,6 +234,28 @@ class OIScanner {
     if (diff > 0.05) return 'RISING';
     if (diff < -0.05) return 'FALLING';
     return 'FLAT';
+  }
+
+  calculateMaxPain(chainData) {
+    const strikes = chainData.strikes || [];
+    if (strikes.length === 0) return 0;
+
+    let maxPainStrike = 0;
+    let minPain = Infinity;
+
+    for (const candidate of strikes) {
+      let pain = 0;
+      for (const s of strikes) {
+        pain += (s.ce?.oi || 0) * Math.max(0, candidate.strike - s.strike);
+        pain += (s.pe?.oi || 0) * Math.max(0, s.strike - candidate.strike);
+      }
+      if (pain < minPain) {
+        minPain = pain;
+        maxPainStrike = candidate.strike;
+      }
+    }
+
+    return maxPainStrike;
   }
 
   calculateStrikeConcentration(chainData) {
