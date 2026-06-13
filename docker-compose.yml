@@ -1,0 +1,51 @@
+# PTA V2 stack for the OCI Ampere A1 VM.
+# OCI Load Balancer fronts the VM and terminates TLS, routing to app:3000,
+# so there is no NGINX here. All images are multi-arch (arm64-ready).
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pta}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-pta}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pta} -d ${POSTGRES_DB:-pta}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published to the host/LB — only reachable inside the compose network
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://${POSTGRES_USER:-pta}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pta}
+      DHAN_CLIENT_ID: ${DHAN_CLIENT_ID}
+      DHAN_PIN: ${DHAN_PIN}
+      DHAN_TOTP_SECRET: ${DHAN_TOTP_SECRET}
+    ports:
+      - "3000:3000"   # OCI LB backend target
+
+volumes:
+  pgdata:

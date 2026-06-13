@@ -24,6 +24,8 @@ const ExpressGateway = require('./gateway/ExpressGateway');
 const WebSocketGateway = require('./gateway/WebSocketGateway');
 const HealthMonitor = require('./gateway/HealthMonitor');
 const SignalArchiver = require('./archive/SignalArchiver');
+const Database = require('./utils/Database');
+const ChainArchiver = require('./archive/ChainArchiver');
 const config = require('./config/pta.config');
 
 class PTAServer {
@@ -44,6 +46,8 @@ class PTAServer {
     this.presentation = null;
     this.notification = null;
     this.archiver = null;
+    this.db = null;
+    this.chainArchiver = null;
     this.health = null;
     this.gateway = null;
     this.wsGateway = null;
@@ -53,9 +57,13 @@ class PTAServer {
     console.log('Initializing PTA Server...');
     console.log('Environment:', process.env.NODE_ENV || 'development');
 
-    // Step 1: Connect to Redis
+    // Step 1: Connect to Redis (ephemeral) and Postgres (system of record)
     await this.eventBus.connect();
     console.log('✓ Redis connected');
+
+    this.db = new Database(config.postgres);
+    await this.db.connect();
+    this.chainArchiver = new ChainArchiver(this.db, this.eventBus, this.schema);
 
     // Step 2: Generate/refresh Dhan access token (Railway-safe)
     if (process.env.USE_MOCK !== 'true' && config.provider.totpSecret) {
@@ -359,6 +367,7 @@ class PTAServer {
         const chain = this.normalizer.normalizeOptionChain(raw, inst.symbol);
         await this.normalizer.writeOptionChain(chain);
         await this.scanners.onOptionChainFromProvider(chain);
+        await this.chainArchiver.record(chain);
       } catch (err) {
         const detail = err.response ? JSON.stringify(err.response.data) : err.message;
         console.error(`Chain poll ${inst.symbol}:`, detail);
@@ -381,6 +390,7 @@ class PTAServer {
     this.tokenManager?.stop();
     await this.provider?.disconnect();
     await this.eventBus?.disconnect();
+    await this.db?.close();
     console.log('✓ PTA Server stopped');
   }
 }

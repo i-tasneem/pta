@@ -121,6 +121,10 @@ module.exports = {
     streams: { ohlcMaxLen: 500, oiMaxLen: 1000, eventsMaxLen: 10000 }
   },
 
+  postgres: {
+    url: process.env.DATABASE_URL || ''
+  },
+
   sqlite: {
     path: process.env.SQLITE_PATH || './pta_archive.db',
     archiveInterval: 60000,
