@@ -44,6 +44,9 @@ services:
       DHAN_CLIENT_ID: ${DHAN_CLIENT_ID}
       DHAN_PIN: ${DHAN_PIN}
       DHAN_TOTP_SECRET: ${DHAN_TOTP_SECRET}
+      AUTH_SECRET: ${AUTH_SECRET}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     ports:
       - "3000:3000"   # OCI LB backend target
 

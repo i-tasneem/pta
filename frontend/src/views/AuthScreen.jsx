@@ -19,6 +19,7 @@ export default function AuthScreen({ onAuthed }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+  const [showPw, setShowPw] = useState(false);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -70,7 +71,23 @@ export default function AuthScreen({ onAuthed }) {
             <Field label="Username" value={form.username} onChange={set('username')} autoComplete="username" required />
 
             {mode === 'login' ? (
-              <Field label="Password" type="password" value={form.password} onChange={set('password')} autoComplete="current-password" required />
+              <label className="block">
+                <span className="text-xs text-slate-400">Password</span>
+                <div className="relative mt-1">
+                  <input
+                    type={showPw ? 'text' : 'password'}
+                    value={form.password}
+                    onChange={set('password')}
+                    autoComplete="current-password"
+                    required
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 pr-14 text-sm text-slate-200 outline-none focus:border-sky-500"
+                  />
+                  <button type="button" onClick={() => setShowPw((s) => !s)}
+                    className="absolute inset-y-0 right-0 px-3 text-[11px] text-slate-400 hover:text-slate-200">
+                    {showPw ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+              </label>
             ) : (
               <>
                 <Field label="Full name" value={form.name} onChange={set('name')} required />
