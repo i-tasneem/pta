@@ -9,7 +9,8 @@ import {
   RegimeResult,
   ArchetypeName,
   Side,
-  SessionPhase
+  SessionPhase,
+  Wall
 } from '../types';
 import { Evidence, clamp01, zStrength } from '../scoring/scoring';
 
@@ -53,6 +54,21 @@ function fut(ctx: ArchetypeContext): number {
   return clamp01(ctx.futParticipation ?? 0);
 }
 
+// The wall being broken — the nearest outlier within a band of spot (so the
+// setup persists for the snapshots just after price crosses it), falling back
+// to the regime's corridor level when per-strike walls aren't supplied.
+function breakLevel(walls: Wall[], corridorLevel: number | null, spot: number, band: number): number | null {
+  let best: number | null = null;
+  let bestD = Infinity;
+  for (const w of walls) {
+    const d = Math.abs(w.strike - spot);
+    if (d <= band && d < bestD) { bestD = d; best = w.strike; }
+  }
+  if (best != null) return best;
+  if (corridorLevel != null && Math.abs(corridorLevel - spot) <= band) return corridorLevel;
+  return null;
+}
+
 // 1. Wall Capitulation Break — price breaks a wall whose writers are fleeing.
 export const wallCapitulationBreak: Archetype = {
   name: 'WALL_CAPITULATION_BREAK',
@@ -60,8 +76,10 @@ export const wallCapitulationBreak: Archetype = {
     const { analytics: a, regime: r, snapshot: s } = ctx;
     if (!a.ready || !r.allowed.includes('WALL_CAPITULATION_BREAK')) return null;
 
-    if (a.flowState === 'SQUEEZE_FUEL_BULL' && r.corridor.resistance != null && s.spot >= r.corridor.resistance - tol(s.spot)) {
-      const wall = r.corridor.resistance;
+    const band = fallbackMove(s.spot);
+    const bullWall = breakLevel(a.ceWalls, r.corridor.resistance, s.spot, band);
+    if (a.flowState === 'SQUEEZE_FUEL_BULL' && bullWall != null && s.spot >= bullWall - tol(s.spot)) {
+      const wall = bullWall;
       const target = wall + (r.corridor.width ?? fallbackMove(s.spot));
       return {
         archetype: 'WALL_CAPITULATION_BREAK', direction: 'CE', entryRef: s.spot,
@@ -79,8 +97,9 @@ export const wallCapitulationBreak: Archetype = {
       };
     }
 
-    if (a.flowState === 'CAPITULATION_BEAR' && r.corridor.support != null && s.spot <= r.corridor.support + tol(s.spot)) {
-      const wall = r.corridor.support;
+    const bearWall = breakLevel(a.peWalls, r.corridor.support, s.spot, band);
+    if (a.flowState === 'CAPITULATION_BEAR' && bearWall != null && s.spot <= bearWall + tol(s.spot)) {
+      const wall = bearWall;
       const target = wall - (r.corridor.width ?? fallbackMove(s.spot));
       return {
         archetype: 'WALL_CAPITULATION_BREAK', direction: 'PE', entryRef: s.spot,

@@ -102,6 +102,11 @@ export class RegimeClassifier {
 
     if (!a.ready) return 'UNCLEAR';
 
+    // The strongest directional flow states (writers fleeing into the move)
+    // ARE a trend regime — they don't need the slower ratcheting confirmation.
+    if (a.flowState === 'SQUEEZE_FUEL_BULL' && a.priceDelta > 0) return 'TREND_BULL';
+    if (a.flowState === 'CAPITULATION_BEAR' && a.priceDelta < 0) return 'TREND_BEAR';
+
     // Sustained one-sided writer flow with the supporting wall ratcheting.
     if (a.netWriterFlow >= this.trendNWF && a.priceDelta > 0 && ctx.peRatcheting) return 'TREND_BULL';
     if (a.netWriterFlow <= -this.trendNWF && a.priceDelta < 0 && ctx.ceRatcheting) return 'TREND_BEAR';

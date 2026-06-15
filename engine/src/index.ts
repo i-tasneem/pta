@@ -29,3 +29,5 @@ export {
   expiryPin
 } from './archetypes/archetypes';
 export type { Archetype, ArchetypeContext, ArchetypeSignal } from './archetypes/archetypes';
+export { SetupEngine } from './lifecycle/lifecycle';
+export type { SetupStage, Hypothesis, Transition, SnapshotResult, LifecycleOptions } from './lifecycle/lifecycle';
