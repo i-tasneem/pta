@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { Card, Badge, Empty, ScoreBar } from '../components/ui';
 import { fmtPrice } from '../lib/format';
+import Playbook from './Playbook';
 
 const ARCHETYPE_LABELS = {
   WALL_CAPITULATION_BREAK: 'Wall Capitulation Break',
@@ -45,17 +46,17 @@ export default function SetupsView() {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
+  let body;
   if (!enabled) {
-    return <Empty title="V2 engine not enabled" hint="Engine build or Postgres unavailable on the server" />;
-  }
-  if (loading && setups.length === 0) return <Empty title="Loading setups…" />;
-  if (setups.length === 0) {
-    return <Empty title="No setups forming"
+    body = <Empty title="V2 engine not enabled" hint="Engine build or Postgres unavailable on the server" />;
+  } else if (loading && setups.length === 0) {
+    body = <Empty title="Loading setups…" />;
+  } else if (setups.length === 0) {
+    body = <Empty title="No setups forming"
       hint="Positioning setups appear here as they build — a quiet tape is normal" />;
-  }
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  } else {
+    body = (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {setups.map((s) => {
         const isCE = s.direction === 'CE';
         const triggered = s.stage === 'TRIGGERED' || s.stage === 'ACTIVE';
@@ -129,6 +130,14 @@ export default function SetupsView() {
           </Card>
         );
       })}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Playbook />
+      {body}
     </div>
   );
 }
