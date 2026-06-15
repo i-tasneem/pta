@@ -15,5 +15,7 @@ export const api = {
   volume: (instrument, tf = '5m', limit = 50) => get(`/api/volume/${instrument}?tf=${tf}&limit=${limit}`),
   chain: (instrument) => get(`/api/chain/${instrument}`),
   performance: () => get('/api/performance'),
-  opportunities: (limit = 10) => get(`/api/opportunities?limit=${limit}`)
+  opportunities: (limit = 10) => get(`/api/opportunities?limit=${limit}`),
+  v2Setups: () => get('/api/v2/setups'),
+  v2Signals: (limit = 100) => get(`/api/v2/signals?limit=${limit}`)
 };

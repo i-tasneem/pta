@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from './lib/api';
 import ScannerView from './views/ScannerView';
+import SetupsView from './views/SetupsView';
 import SignalsView from './views/SignalsView';
 import AnalyticsView from './views/AnalyticsView';
 import ChainView from './views/ChainView';
@@ -13,6 +14,7 @@ const WS_URL =
 
 const VIEWS = [
   { id: 'scanner',   label: 'Scanner',   icon: '◎' },
+  { id: 'setups',    label: 'Setups',    icon: '◈' },
   { id: 'signals',   label: 'Signals',   icon: '⚡' },
   { id: 'analytics', label: 'Analytics', icon: '▤' },
   { id: 'chain',     label: 'Chain',     icon: '☰' },
@@ -70,6 +72,9 @@ export default function App() {
       case 'opportunity:trigger':
         playBeep();
         fetchData();
+        break;
+      case 'v2:transition':
+        if (msg.data?.to === 'TRIGGERED') playBeep();
         break;
       case 'signal:state':
         setSignals(prev =>
@@ -144,6 +149,7 @@ export default function App() {
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 py-4 pb-20 md:pb-6">
         {view === 'scanner' && <ScannerView instruments={instruments} onAnalyze={goAnalyze} />}
+        {view === 'setups' && <SetupsView />}
         {view === 'signals' && <SignalsView signals={signals} />}
         {view === 'analytics' && (
           <AnalyticsView instruments={instruments} selected={selected} onSelect={setSelected} />
