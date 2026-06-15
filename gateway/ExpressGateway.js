@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const authRoutes = require('./AuthRoutes');
 
 class ExpressGateway {
   constructor(
@@ -10,7 +11,8 @@ class ExpressGateway {
     config,
     archiver,
     v2,
-    db
+    db,
+    auth
   ) {
     this.app = express();
     this.eventBus = eventBus;
@@ -21,9 +23,11 @@ class ExpressGateway {
     this.archiver = archiver;
     this.v2 = v2;
     this.db = db;
+    this.auth = auth;
   }
 
   setupRoutes() {
+    this.app.set('trust proxy', true); // OCI LB sets X-Forwarded-Proto
     this.app.use(express.json());
 
     const frontendPath = path.join(
@@ -33,6 +37,19 @@ class ExpressGateway {
     );
 
     this.app.use(express.static(frontendPath));
+
+    // Auth: identify the caller, expose /api/auth/*, and gate the data API.
+    // /api/health and /api/auth stay public (LB health check + login flow).
+    if (this.auth) {
+      this.app.use(this.auth.middleware());
+      this.app.use('/api/auth', authRoutes(this.db, this.auth));
+      if (this.db && this.db.enabled) {
+        this.app.use('/api', (req, res, next) => {
+          if (req.path === '/health' || req.path.startsWith('/auth')) return next();
+          return this.auth.requireAuth()(req, res, next);
+        });
+      }
+    }
 
     this.app.get('/api/health', async (req, res) => {
       const health = await this.eventBus.hgetall(

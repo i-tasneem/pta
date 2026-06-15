@@ -25,6 +25,7 @@ const WebSocketGateway = require('./gateway/WebSocketGateway');
 const HealthMonitor = require('./gateway/HealthMonitor');
 const SignalArchiver = require('./archive/SignalArchiver');
 const Database = require('./utils/Database');
+const Auth = require('./utils/Auth');
 const ChainArchiver = require('./archive/ChainArchiver');
 const V2Adapter = require('./signals/V2Adapter');
 const config = require('./config/pta.config');
@@ -75,6 +76,12 @@ class PTAServer {
     this.db = new Database(config.postgres);
     await this.db.connect();
     this.chainArchiver = new ChainArchiver(this.db, this.eventBus, this.schema);
+
+    this.auth = new Auth(process.env.AUTH_SECRET);
+    if (!process.env.AUTH_SECRET) {
+      console.warn('⚠ AUTH_SECRET not set — sessions reset on restart. Set it in .env');
+    }
+    await this.bootstrapAdmin();
 
     if (v2engine) {
       this.v2 = new V2Adapter(
@@ -197,7 +204,7 @@ class PTAServer {
     await this.archiver.start();
 
     // Start HTTP + WS gateway
-    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver, this.v2, this.db);
+    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver, this.v2, this.db, this.auth);
     const port = process.env.PORT || 3000;
     const server = expressGateway.listen(port);
 
@@ -257,6 +264,27 @@ class PTAServer {
         securityId: map[i.symbol].securityId,
         exchangeSegment: map[i.symbol].exchangeSegment
       }));
+  }
+
+  // Seed an admin from env on first boot so there's always a way in to issue
+  // passwords to signups.
+  async bootstrapAdmin() {
+    if (!this.db || !this.db.enabled) return;
+    const u = process.env.ADMIN_USERNAME;
+    const p = process.env.ADMIN_PASSWORD;
+    if (!u || !p) return;
+    try {
+      const exists = await this.db.query('SELECT 1 FROM users WHERE username = $1', [u.toLowerCase()]);
+      if (exists.rows.length) return;
+      await this.db.query(
+        `INSERT INTO users (username, email, name, role, status, pw_hash)
+         VALUES ($1, $2, 'Administrator', 'ADMIN', 'ACTIVE', $3)`,
+        [u.toLowerCase(), `${u.toLowerCase()}@pta.local`, this.auth.hashPassword(p)]
+      );
+      console.log('✓ Admin user bootstrapped:', u.toLowerCase());
+    } catch (err) {
+      console.error('Admin bootstrap failed:', err.message);
+    }
   }
 
   async bootstrapHistory(instruments) {

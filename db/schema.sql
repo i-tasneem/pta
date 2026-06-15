@@ -126,6 +126,12 @@ CREATE TABLE IF NOT EXISTS users (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Login fields (idempotent; the base CREATE above predates username auth)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT UNIQUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status   TEXT NOT NULL DEFAULT 'PENDING';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone    TEXT;
+ALTER TABLE users ALTER COLUMN pw_hash DROP NOT NULL; -- PENDING users have no password yet
+
 CREATE TABLE IF NOT EXISTS refresh_tokens (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

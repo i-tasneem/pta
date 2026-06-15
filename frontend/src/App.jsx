@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from './lib/api';
+import { auth } from './lib/auth';
+import AuthScreen from './views/AuthScreen';
 import ScannerView from './views/ScannerView';
 import SetupsView from './views/SetupsView';
 import SignalsView from './views/SignalsView';
@@ -29,7 +31,29 @@ export default function App() {
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
 
+  // auth: 'checking' | 'required' | 'ready'  (ready = authed or auth disabled)
+  const [authState, setAuthState] = useState('checking');
+  const [user, setUser] = useState(null);
+
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await auth.status();
+        if (!s.enabled) { if (!cancelled) setAuthState('ready'); return; }
+        const { user: me } = await auth.me();
+        if (!cancelled) { setUser(me); setAuthState('ready'); }
+      } catch {
+        if (!cancelled) setAuthState('required');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const ready = authState === 'ready';
+
+  useEffect(() => {
+    if (!ready) return;
     const connect = () => {
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
@@ -52,7 +76,13 @@ export default function App() {
       wsRef.current = { close: () => {} }; // prevent reconnect after unmount
       clearInterval(interval);
     };
-  }, []);
+  }, [ready]);
+
+  const doLogout = async () => {
+    try { await auth.logout(); } catch {}
+    setUser(null);
+    setAuthState('required');
+  };
 
   const fetchData = async () => {
     try {
@@ -107,6 +137,13 @@ export default function App() {
 
   const triggeredCount = signals.filter(s => s.status === 'TRIGGERED').length;
 
+  if (authState === 'checking') {
+    return <div className="min-h-screen bg-slate-950 text-slate-500 flex items-center justify-center text-sm">Loading…</div>;
+  }
+  if (authState === 'required') {
+    return <AuthScreen onAuthed={(u) => { setUser(u); setAuthState('ready'); }} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
       {/* Header */}
@@ -142,6 +179,16 @@ export default function App() {
                 : 'bg-rose-500/15 text-rose-400'}`}>
               {wsConnected ? '● LIVE' : '○ OFFLINE'}
             </span>
+
+            {user && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-400 hidden sm:inline">{user.username}</span>
+                <button onClick={doLogout}
+                  className="px-2 py-1 rounded-md text-[10px] font-medium bg-slate-800 text-slate-400 hover:bg-slate-700 transition">
+                  Logout
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
