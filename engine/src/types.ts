@@ -50,6 +50,42 @@ export interface Wall {
   side: Side;
 }
 
+export type SessionPhase = 'PRE' | 'OPEN' | 'MORNING' | 'MIDDAY' | 'AFTERNOON' | 'CLOSE' | 'POST';
+
+export type Regime =
+  | 'TREND_BULL'
+  | 'TREND_BEAR'
+  | 'CORRIDOR'
+  | 'SQUEEZE_WATCH'
+  | 'EVENT_CHAOS'
+  | 'EXPIRY_GRAVITY'
+  | 'UNCLEAR';
+
+export type ArchetypeName =
+  | 'WALL_CAPITULATION_BREAK'
+  | 'WALL_ABSORPTION_FADE'
+  | 'WRITER_MIGRATION_CONTINUATION'
+  | 'BASIS_FLOW_DIVERGENCE_REVERSAL'
+  | 'EXPIRY_PIN';
+
+export interface Corridor {
+  support: number | null;     // nearest PE wall below spot
+  resistance: number | null;  // nearest CE wall above spot
+  width: number | null;
+  widthPct: number | null;
+}
+
+export interface RegimeResult {
+  regime: Regime;
+  allowed: ArchetypeName[];   // archetypes this regime permits to exist
+  reason: string;
+  corridor: Corridor;
+  sessionPhase: SessionPhase;
+  atmIV: number;
+  isExpiryDay: boolean;
+  basis: number;
+}
+
 export interface PositioningAnalytics {
   ts: number;
   vCE: number;          // localized CE OI velocity (contracts/min)
