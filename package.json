@@ -7,9 +7,11 @@
     "start": "node server.js",
     "start:mock": "USE_MOCK=true node server.js",
     "dev": "nodemon server.js",
-    "build": "cd frontend && npm install && npm run build",
+    "build:engine": "tsc -p engine",
+    "build": "npm run build:engine && cd frontend && npm install && npm run build",
     "production": "npm run build && npm start",
-    "test": "jest --coverage"
+    "test": "jest --coverage",
+    "test:engine": "npm run build:engine && node --test engine/test"
   },
   "dependencies": {
     "axios": "^1.7.0",
@@ -23,7 +25,8 @@
   },
   "devDependencies": {
     "jest": "^29.7.0",
-    "nodemon": "^3.1.0"
+    "nodemon": "^3.1.0",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -9,9 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install root deps first (better layer caching)
+# Install root deps incl. dev (TypeScript/Vite are build-time tools)
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm install
 
 # App source
 COPY . .
