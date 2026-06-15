@@ -31,13 +31,15 @@ class ChainArchiver {
       await this.db.tx(async (client) => {
         const snap = await client.query(
           `INSERT INTO chain_snapshots
-             (symbol, ts, spot, expiry, atm_strike, pcr, max_pain, total_ce_oi, total_pe_oi)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             (symbol, ts, spot, fut, fut_vol, expiry, atm_strike, pcr, max_pain, total_ce_oi, total_pe_oi)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            RETURNING id`,
           [
             chain.instrument,
             new Date(chain.timestamp || Date.now()),
             num(chain.spotLtp),
+            num(chain.fut),
+            int(chain.futVolume),
             chain.expiry || null,
             num(chain.atmStrike),
             num(chain.pcr),

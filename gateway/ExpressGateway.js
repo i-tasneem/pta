@@ -8,7 +8,9 @@ class ExpressGateway {
     presentationService,
     rankingEngine,
     config,
-    archiver
+    archiver,
+    v2,
+    db
   ) {
     this.app = express();
     this.eventBus = eventBus;
@@ -17,6 +19,8 @@ class ExpressGateway {
     this.ranking = rankingEngine;
     this.config = config;
     this.archiver = archiver;
+    this.v2 = v2;
+    this.db = db;
   }
 
   setupRoutes() {
@@ -102,6 +106,30 @@ class ExpressGateway {
         status: 'ok',
         ...health
       });
+    });
+
+    // V2 positioning engine — active setups across instruments (the
+    // FORMING -> READY -> TRIGGERED lifecycle the UI renders)
+    this.app.get('/api/v2/setups', async (req, res) => {
+      if (!this.v2) return res.json({ enabled: false, setups: [] });
+      res.json({ enabled: true, setups: this.v2.getActiveSetups() });
+    });
+
+    // V2 signal history from Postgres
+    this.app.get('/api/v2/signals', async (req, res) => {
+      if (!this.db || !this.db.enabled) return res.json({ signals: [] });
+      try {
+        const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+        const r = await this.db.query(
+          `SELECT s.*, o.outcome, o.pnl, o.duration_ms
+             FROM signals s LEFT JOIN signal_outcomes o ON o.signal_id = s.id
+            ORDER BY s.created_at DESC LIMIT $1`,
+          [limit]
+        );
+        res.json({ signals: r.rows });
+      } catch (err) {
+        res.json({ signals: [] });
+      }
     });
 
     // Screener: one intelligence card per tracked instrument

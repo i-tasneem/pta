@@ -26,7 +26,17 @@ const HealthMonitor = require('./gateway/HealthMonitor');
 const SignalArchiver = require('./archive/SignalArchiver');
 const Database = require('./utils/Database');
 const ChainArchiver = require('./archive/ChainArchiver');
+const V2Adapter = require('./signals/V2Adapter');
 const config = require('./config/pta.config');
+
+// Compiled TypeScript V2 engine (engine/dist). Guarded so a missing build
+// can never crash the app — V2 simply stays disabled.
+let v2engine = null;
+try {
+  v2engine = require('./engine/dist/index.js');
+} catch (err) {
+  console.warn('⚠ V2 engine not built (run "npm run build:engine"); V2 disabled:', err.message);
+}
 
 class PTAServer {
   constructor() {
@@ -48,6 +58,7 @@ class PTAServer {
     this.archiver = null;
     this.db = null;
     this.chainArchiver = null;
+    this.v2 = null;
     this.health = null;
     this.gateway = null;
     this.wsGateway = null;
@@ -64,6 +75,14 @@ class PTAServer {
     this.db = new Database(config.postgres);
     await this.db.connect();
     this.chainArchiver = new ChainArchiver(this.db, this.eventBus, this.schema);
+
+    if (v2engine) {
+      this.v2 = new V2Adapter(
+        this.db, this.eventBus, this.schema, config, v2engine,
+        (evt) => { this.eventBus.publish(evt.type, evt.instrument, evt.data).catch(() => {}); }
+      );
+      console.log('✓ V2 positioning engine enabled');
+    }
 
     // Step 2: Generate/refresh Dhan access token (Railway-safe)
     if (process.env.USE_MOCK !== 'true' && config.provider.totpSecret) {
@@ -178,7 +197,7 @@ class PTAServer {
     await this.archiver.start();
 
     // Start HTTP + WS gateway
-    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver);
+    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver, this.v2, this.db);
     const port = process.env.PORT || 3000;
     const server = expressGateway.listen(port);
 
@@ -365,9 +384,15 @@ class PTAServer {
         if (!raw || !raw.data || raw.data.length === 0) return;
 
         const chain = this.normalizer.normalizeOptionChain(raw, inst.symbol);
+
+        // Attach the paired future's volume delta (merged into the index tick)
+        const tick = await this.eventBus.hgetall(this.schema.tick(inst.symbol));
+        chain.futVolume = parseFloat(tick.volume) || 0;
+
         await this.normalizer.writeOptionChain(chain);
         await this.scanners.onOptionChainFromProvider(chain);
         await this.chainArchiver.record(chain);
+        if (this.v2) await this.v2.onChain(chain);
       } catch (err) {
         const detail = err.response ? JSON.stringify(err.response.data) : err.message;
         console.error(`Chain poll ${inst.symbol}:`, detail);
