@@ -19,3 +19,13 @@ export { WEIGHTS, scoreEvidence, clamp01, zStrength } from './scoring/scoring';
 export type { ScoreComponent, Evidence, ScoreResult } from './scoring/scoring';
 export { buildRiskPlan, premiumATRfromUnderlying } from './risk/risk';
 export type { RiskInputs, RiskPlan } from './risk/risk';
+export {
+  ALL_ARCHETYPES,
+  evaluateArchetypes,
+  wallCapitulationBreak,
+  wallAbsorptionFade,
+  writerMigrationContinuation,
+  basisFlowDivergenceReversal,
+  expiryPin
+} from './archetypes/archetypes';
+export type { Archetype, ArchetypeContext, ArchetypeSignal } from './archetypes/archetypes';
