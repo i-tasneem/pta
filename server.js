@@ -28,6 +28,7 @@ const Database = require('./utils/Database');
 const Auth = require('./utils/Auth');
 const ChainArchiver = require('./archive/ChainArchiver');
 const V2Adapter = require('./signals/V2Adapter');
+const GateTelemetry = require('./signals/GateTelemetry');
 const config = require('./config/pta.config');
 
 // Compiled TypeScript V2 engine (engine/dist). Guarded so a missing build
@@ -60,6 +61,7 @@ class PTAServer {
     this.db = null;
     this.chainArchiver = null;
     this.v2 = null;
+    this.gateTelemetry = null;
     this.health = null;
     this.gateway = null;
     this.wsGateway = null;
@@ -120,7 +122,9 @@ class PTAServer {
     this.mtf = new MultiTimeframeEngine(this.eventBus, this.schema);
     this.opportunity = new OpportunityQualityEngine(this.eventBus, this.schema, config);
     this.ranking = new RankingEngine(this.eventBus, this.schema, config);
-    this.entryTrigger = new EntryTriggerEngine(this.eventBus, this.schema, config);
+    this.gateTelemetry = new GateTelemetry(this.db);
+    await this.gateTelemetry.init();
+    this.entryTrigger = new EntryTriggerEngine(this.eventBus, this.schema, config, this.gateTelemetry);
     this.archiver = new SignalArchiver(config);
     this.signalLifecycle = new SignalLifecycleEngine(this.eventBus, this.schema, config, this.archiver);
     this.presentation = new SignalPresentationService(this.schema, this.eventBus, config);
@@ -204,7 +208,7 @@ class PTAServer {
     await this.archiver.start();
 
     // Start HTTP + WS gateway
-    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver, this.v2, this.db, this.auth);
+    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver, this.v2, this.db, this.auth, this.gateTelemetry);
     const port = process.env.PORT || 3000;
     const server = expressGateway.listen(port);
 
@@ -226,12 +230,18 @@ class PTAServer {
         try {
           await this.mtf.calculateAgreement(inst.symbol);
           await this.regime.detectRegime(inst.symbol);
-          await this.opportunity.calculateScore(inst.symbol);
+          const opp = await this.opportunity.calculateScore(inst.symbol);
+          if (opp) this.gateTelemetry?.recordOpportunity(opp); // observability only
         } catch (err) {
           console.error(`Analysis ${inst.symbol}:`, err.message);
         }
       }
     }, 10000);
+
+    // Persist telemetry buffers periodically (restart-durable funnel)
+    this.telemetryTimer = setInterval(() => {
+      this.gateTelemetry?.flush().catch(() => {});
+    }, 15000);
   }
 
   async discoverFutures(instruments) {
@@ -433,6 +443,8 @@ class PTAServer {
     if (this.chainTimer) clearInterval(this.chainTimer);
     if (this.providerRetryTimer) clearInterval(this.providerRetryTimer);
     if (this.analysisTimer) clearInterval(this.analysisTimer);
+    if (this.telemetryTimer) clearInterval(this.telemetryTimer);
+    await this.gateTelemetry?.flush().catch(() => {});
     this.health?.stop();
     this.scanners?.stop();
     this.ranking?.stop();

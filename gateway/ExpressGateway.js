@@ -12,7 +12,8 @@ class ExpressGateway {
     archiver,
     v2,
     db,
-    auth
+    auth,
+    gateTelemetry
   ) {
     this.app = express();
     this.eventBus = eventBus;
@@ -24,6 +25,7 @@ class ExpressGateway {
     this.v2 = v2;
     this.db = db;
     this.auth = auth;
+    this.gateTelemetry = gateTelemetry;
   }
 
   setupRoutes() {
@@ -123,6 +125,69 @@ class ExpressGateway {
         status: 'ok',
         ...health
       });
+    });
+
+    // Diagnostics — gate conversion funnel (today, restart-durable)
+    this.app.get('/api/diag/funnel', async (req, res) => {
+      if (!this.gateTelemetry) return res.json({ enabled: false });
+      res.json({ enabled: true, ...this.gateTelemetry.getFunnel() });
+    });
+
+    // Diagnostics — rejection analytics over a recent window (default 24h)
+    this.app.get('/api/diag/rejections', async (req, res) => {
+      if (!this.db || !this.db.enabled) return res.json({ enabled: false });
+      const hours = Math.min(parseInt(req.query.hours) || 24, 720);
+      const since = new Date(Date.now() - hours * 3600000);
+      try {
+        const [byGate, byReason, bySymbol, byRegime, totals] = await Promise.all([
+          this.db.query(
+            `SELECT failed_at_gate AS gate, count(*)::int AS n FROM gate_audit
+              WHERE ts >= $1 AND failed_at_gate IS NOT NULL
+              GROUP BY failed_at_gate ORDER BY n DESC`, [since]),
+          this.db.query(
+            `SELECT failed_at_gate AS gate, reason, count(*)::int AS n FROM gate_audit
+              WHERE ts >= $1 AND reason IS NOT NULL
+              GROUP BY failed_at_gate, reason ORDER BY n DESC LIMIT 25`, [since]),
+          this.db.query(
+            `SELECT symbol, failed_at_gate AS gate, count(*)::int AS n FROM gate_audit
+              WHERE ts >= $1 AND failed_at_gate IS NOT NULL
+              GROUP BY symbol, failed_at_gate ORDER BY n DESC LIMIT 50`, [since]),
+          this.db.query(
+            `SELECT regime, failed_at_gate AS gate, count(*)::int AS n FROM gate_audit
+              WHERE ts >= $1 AND failed_at_gate IS NOT NULL
+              GROUP BY regime, failed_at_gate ORDER BY n DESC LIMIT 50`, [since]),
+          this.db.query(
+            `SELECT count(*)::int AS runs,
+                    count(*) FILTER (WHERE generated)::int AS generated,
+                    count(*) FILTER (WHERE NOT generated)::int AS rejected
+               FROM gate_audit WHERE ts >= $1`, [since])
+        ]);
+        res.json({
+          enabled: true, windowHours: hours,
+          totals: totals.rows[0],
+          mostCommonRejectionGate: byGate.rows[0] || null,
+          byGate: byGate.rows,
+          topReasons: byReason.rows,
+          bySymbol: bySymbol.rows,
+          byRegime: byRegime.rows
+        });
+      } catch (err) {
+        res.json({ enabled: true, error: err.message });
+      }
+    });
+
+    // Diagnostics — trace a single opportunity's recent gate runs
+    this.app.get('/api/diag/opportunity/:id', async (req, res) => {
+      if (!this.db || !this.db.enabled) return res.json({ enabled: false });
+      try {
+        const r = await this.db.query(
+          `SELECT * FROM gate_audit WHERE opportunity_id = $1 ORDER BY ts DESC LIMIT 50`,
+          [req.params.id]
+        );
+        res.json({ enabled: true, runs: r.rows });
+      } catch (err) {
+        res.json({ enabled: true, error: err.message });
+      }
     });
 
     // V2 positioning engine — active setups across instruments (the

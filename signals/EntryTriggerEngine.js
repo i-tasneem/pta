@@ -8,10 +8,11 @@ const Gate6RankingValidation = require('./Gate6RankingValidation');
 const { UserReasons } = require('./SignalTypes');
 
 class EntryTriggerEngine {
-  constructor(eventBus, redisSchema, config) {
+  constructor(eventBus, redisSchema, config, telemetry = null) {
     this.eventBus = eventBus;
     this.schema = redisSchema;
     this.config = config.gates;
+    this.telemetry = telemetry; // observability side-channel; never affects decisions
     this.gates = [
       new Gate1RegimeValidation(this.config.gate1),
       new Gate2TrendValidation(this.config.gate2),
@@ -82,6 +83,7 @@ class EntryTriggerEngine {
 
       if (!result.pass) {
         await this.eventBus.publish('gate:failed', instrument, { gate: i + 1, reason: result.reason });
+        this._recordTelemetry(context, gateResults, i + 1, false);
         return { triggered: false, failedAtGate: i + 1, reason: result.reason, state: this.mapGateToState(i + 1) };
       }
     }
@@ -91,7 +93,39 @@ class EntryTriggerEngine {
     await this.eventBus.hset(this.schema.activeSignal(instrument), signal);
     await this.eventBus.publish('opportunity:trigger', instrument, signal);
 
+    this._recordTelemetry(context, gateResults, null, true);
     return { triggered: true, signal };
+  }
+
+  // Side-channel only. Wrapped so telemetry can never break signal generation.
+  _recordTelemetry(context, gateResults, failedAtGate, generated) {
+    if (!this.telemetry) return;
+    try {
+      const { instrument, opportunity, state } = context;
+      this.telemetry.recordGateRun({
+        opportunityId: opportunity.opportunityId || `${instrument}|${opportunity.direction}`,
+        symbol: instrument,
+        direction: opportunity.direction,
+        gateResults,
+        failedAtGate,
+        generated,
+        reason: failedAtGate ? (gateResults[gateResults.length - 1] || {}).reason : null,
+        regime: state.regime,
+        score: parseFloat(opportunity.score) || 0,
+        metrics: {
+          score: parseFloat(opportunity.score) || 0,
+          regimeConfidence: parseFloat(state.regimeConfidence) || 0,
+          pcrTrend: state.pcrTrend,
+          oiVelocity: parseFloat(state.oiVelocity) || 0,
+          oiPattern: state.oiPattern,
+          volumeStrength_5m: parseFloat(state.volumeStrength_5m) || 0,
+          rsi_5m: parseFloat(state.rsi_5m) || 0,
+          tfAgreement: parseFloat(state.tfAgreement) || 0
+        }
+      });
+    } catch (err) {
+      console.error('GateTelemetry record:', err.message);
+    }
   }
 
   generateSignal(context, gateResults) {

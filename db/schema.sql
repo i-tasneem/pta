@@ -100,6 +100,37 @@ CREATE TABLE IF NOT EXISTS strategy_performance (
   PRIMARY KEY (strategy, regime, session_bucket, score_bucket)
 );
 
+-- ============================================================
+-- DIAGNOSTICS / OBSERVABILITY  (no effect on signal decisions)
+-- One row per gate evaluation run; the funnel counters are a daily rollup.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS gate_audit (
+  id              BIGSERIAL PRIMARY KEY,
+  ts              TIMESTAMPTZ NOT NULL DEFAULT now(),
+  opportunity_id  TEXT,
+  symbol          TEXT,
+  direction       TEXT,
+  reached_gate    INTEGER,     -- highest gate number evaluated
+  failed_at_gate  INTEGER,     -- NULL if a signal was generated
+  generated       BOOLEAN NOT NULL DEFAULT false,
+  reason          TEXT,        -- failing gate's reason (carries the metric)
+  regime          TEXT,
+  score           DOUBLE PRECISION,
+  gate_results    JSONB,       -- [{gate,pass,reason}] for gates evaluated
+  metrics         JSONB        -- context snapshot at decision time
+);
+CREATE INDEX IF NOT EXISTS idx_gate_audit_ts        ON gate_audit (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_gate_audit_symbol    ON gate_audit (symbol);
+CREATE INDEX IF NOT EXISTS idx_gate_audit_failed    ON gate_audit (failed_at_gate);
+
+CREATE TABLE IF NOT EXISTS funnel_counters (
+  day     DATE NOT NULL,
+  metric  TEXT NOT NULL,
+  count   BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, metric)
+);
+
 CREATE TABLE IF NOT EXISTS backtest_runs (
   id            BIGSERIAL PRIMARY KEY,
   strategy      TEXT,
