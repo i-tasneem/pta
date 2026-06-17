@@ -95,12 +95,12 @@ export default function SetupsView() {
             {s.plan && (
               <div className="grid grid-cols-4 gap-2 mt-3 text-center">
                 <div className="rounded-lg bg-slate-800/50 py-1.5">
-                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Strike</div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Strike · {s.plan.moneyness}</div>
                   <div className="text-xs font-semibold text-slate-200">{fmtPrice(s.plan.strike)}{isCE ? ' CE' : ' PE'}</div>
                 </div>
                 <div className="rounded-lg bg-slate-800/50 py-1.5">
-                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Entry ₹</div>
-                  <div className="text-xs font-semibold text-sky-300">{fmtPrice(s.plan.entryPremium)}</div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">LTP ₹</div>
+                  <div className="text-xs font-semibold text-sky-300">{fmtPrice(s.plan.currentPremium ?? s.plan.entryPremium)}</div>
                 </div>
                 <div className="rounded-lg bg-slate-800/50 py-1.5">
                   <div className="text-[10px] uppercase tracking-wider text-slate-500">SL ₹</div>
@@ -114,8 +114,28 @@ export default function SetupsView() {
             )}
             {s.plan && (
               <div className="text-[11px] text-slate-500 mt-1">
-                R:R {s.plan.rr} · risk {s.plan.riskInPremiumATR} premium-ATR
+                Entry ₹{fmtPrice(s.plan.entryPremium)} · R:R {s.plan.rr} · risk {s.plan.riskInPremiumATR} premium-ATR · pinned strike
                 {s.plan.valid === false && <span className="text-amber-400"> · below threshold</span>}
+              </div>
+            )}
+
+            {s.ladder && s.ladder.length > 0 && (
+              <div className="mt-2">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Strike ladder ({isCE ? 'CE' : 'PE'})</div>
+                <div className="flex gap-1 overflow-x-auto">
+                  {s.ladder.map((k) => {
+                    const pinned = s.plan && k.strike === s.plan.strike;
+                    return (
+                      <div key={k.strike}
+                        className={`flex-1 min-w-[56px] rounded-md px-1.5 py-1 text-center text-[10px] border ${
+                          pinned ? 'border-sky-500/60 bg-sky-500/10' : 'border-slate-800 bg-slate-800/40'}`}>
+                        <div className="text-slate-500">{k.label}{pinned ? ' ●' : ''}</div>
+                        <div className="text-slate-300 font-medium">{fmtPrice(k.strike)}</div>
+                        <div className="text-slate-400">₹{fmtPrice(k.premium)}</div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 

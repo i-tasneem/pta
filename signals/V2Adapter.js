@@ -30,6 +30,7 @@ class V2Adapter {
     this.lastKnown = new Map();      // hypothesis id -> { entry, stop, target, direction, archetype }
     this.shadows = new Map();        // hypothesis id -> running shadow record
     this.pendingOutcomes = [];       // non-triggered setups awaiting a would-be outcome
+    this.pinnedStrikes = new Map();  // hypothesis id -> pinned strike + frozen plan
     this.lifecycleOpts = (config && config.v2 && config.v2.lifecycle) || {};
     this.shadowWindowMs = (config && config.v2 && config.v2.shadowWindowMs) || 90 * 60000;
   }
@@ -106,6 +107,7 @@ class V2Adapter {
         if (!TERM.has(t.to)) continue;
         const sh = this.shadows.get(t.id);
         this.shadows.delete(t.id);
+        this.pinnedStrikes.delete(t.id); // release the pinned strike
         // Only setups that NEVER triggered are "missed" — start watching outcome
         if (sh && !sh.everTriggered && (t.to === 'INVALIDATED' || t.to === 'EXPIRED') && sh.target > 0 && sh.stop > 0) {
           this.pendingOutcomes.push({ ...sh, deadlineTs: (Number(chain.timestamp) || Date.now()) + this.shadowWindowMs, terminalReason: t.to });
@@ -189,49 +191,82 @@ class V2Adapter {
     };
   }
 
-  // Most liquid option near 0.5 delta for the signal direction.
-  selectStrike(chain, direction) {
-    let best = null;
-    let bestScore = Infinity;
-    for (const s of chain.strikes) {
+  // The 2 ITM + ATM + 2 OTM strikes on the signal side (for display + pinning).
+  // ITM/OTM is relative to direction: CE ITM = below spot, PE ITM = above spot.
+  strikeLadder(chain, direction) {
+    const sorted = [...chain.strikes].sort((a, b) => a.strike - b.strike);
+    if (sorted.length === 0) return [];
+    const spot = Number(chain.spotLtp) || Number(chain.atmStrike) || 0;
+    let atmIdx = 0;
+    let best = Infinity;
+    sorted.forEach((s, i) => { const d = Math.abs(s.strike - spot); if (d < best) { best = d; atmIdx = i; } });
+
+    const pick = (idx, label) => {
+      const s = sorted[idx];
+      if (!s) return null;
       const leg = direction === 'CE' ? s.ce : s.pe;
-      if (!leg || !(leg.ltp > 0)) continue;
-      const deltaGap = Math.abs(Math.abs(Number(leg.delta) || 0.5) - 0.5);
-      const spreadPct = leg.ask > 0 ? Math.max(0, leg.ask - leg.bid) / leg.ltp : 0.5;
-      const score = deltaGap + spreadPct;
-      if (score < bestScore) { bestScore = score; best = { strike: s.strike, leg }; }
-    }
-    if (!best && chain.strikes.length) {
-      const atm = chain.strikes.reduce((b, s) =>
-        Math.abs(s.strike - chain.atmStrike) < Math.abs(b.strike - chain.atmStrike) ? s : b, chain.strikes[0]);
-      best = { strike: atm.strike, leg: direction === 'CE' ? atm.ce : atm.pe };
-    }
-    return best;
+      return { strike: s.strike, label, premium: leg ? Number(leg.ltp) || 0 : 0, delta: leg ? Number(leg.delta) || 0 : 0, oi: leg ? Number(leg.oi) || 0 : 0 };
+    };
+
+    const order = direction === 'CE'
+      ? [[atmIdx - 2, 'ITM2'], [atmIdx - 1, 'ITM1'], [atmIdx, 'ATM'], [atmIdx + 1, 'OTM1'], [atmIdx + 2, 'OTM2']]
+      : [[atmIdx + 2, 'ITM2'], [atmIdx + 1, 'ITM1'], [atmIdx, 'ATM'], [atmIdx - 1, 'OTM1'], [atmIdx - 2, 'OTM2']];
+    return order.map(([i, l]) => pick(i, l)).filter(Boolean);
   }
 
-  planFor(h, chain, atr) {
-    const sel = this.selectStrike(chain, h.direction);
-    if (!sel || !sel.leg || !(sel.leg.ltp > 0)) return null;
-    const deltaSigned = h.direction === 'CE'
-      ? Math.abs(Number(sel.leg.delta) || 0.5)
-      : -Math.abs(Number(sel.leg.delta) || 0.5);
+  findLeg(chain, strike, direction) {
+    const s = chain.strikes.find((x) => x.strike === strike);
+    if (!s) return null;
+    return direction === 'CE' ? s.ce : s.pe;
+  }
+
+  // Pin the traded strike ONCE, the first time a setup is seen. SL/target are
+  // frozen on that strike's premium and never re-selected — so when spot drifts
+  // and ATM moves, we keep following the original strike, not the new ATM.
+  ensurePin(h, chain, atr) {
+    let pin = this.pinnedStrikes.get(h.id);
+    if (pin) return pin;
+    const ladder = this.strikeLadder(chain, h.direction);
+    const chosen = ladder.find((x) => x.label === 'ATM') || ladder[0];
+    if (!chosen || !(chosen.premium > 0)) return null;
+
+    const deltaSigned = h.direction === 'CE' ? Math.abs(chosen.delta || 0.5) : -Math.abs(chosen.delta || 0.5);
     const premiumATR = this.engine.premiumATRfromUnderlying(atr || 50, deltaSigned) || 10;
     const plan = this.engine.buildRiskPlan({
       direction: h.direction, entryUnderlying: h.entryRef,
       structuralStop: h.structuralStop, structuralTarget: h.structuralTarget,
-      optionPremium: sel.leg.ltp, deltaSigned, gamma: 0, premiumATR
+      optionPremium: chosen.premium, deltaSigned, gamma: 0, premiumATR
     });
-    return { strike: sel.strike, entryPremium: sel.leg.ltp, ...plan };
+    pin = {
+      strike: chosen.strike, label: chosen.label, delta: chosen.delta,
+      entryPremium: chosen.premium, stopPremium: plan.stopPremium, targetPremium: plan.targetPremium,
+      rr: plan.rr, valid: plan.valid, riskInPremiumATR: plan.riskInPremiumATR,
+      pinnedAt: Number(chain.timestamp) || Date.now()
+    };
+    this.pinnedStrikes.set(h.id, pin);
+    return pin;
   }
 
   view(h, chain, atr) {
-    const plan = this.planFor(h, chain, atr);
+    const pin = this.ensurePin(h, chain, atr);
+    const ladder = this.strikeLadder(chain, h.direction);
+    let plan = null;
+    if (pin) {
+      const leg = this.findLeg(chain, pin.strike, h.direction); // live mark of the PINNED strike
+      plan = {
+        strike: pin.strike, moneyness: pin.label,
+        entryPremium: pin.entryPremium,
+        currentPremium: leg ? Number(leg.ltp) || 0 : null,
+        stopPremium: pin.stopPremium, targetPremium: pin.targetPremium,
+        rr: pin.rr, valid: pin.valid, riskInPremiumATR: pin.riskInPremiumATR
+      };
+    }
     return {
       id: h.id, instrument: h.instrument, archetype: h.archetype, direction: h.direction,
       stage: h.stage, score: h.score, confidence: this.confidence(h),
       reasons: h.reasons, thesis: h.thesis,
       entryRef: h.entryRef, structuralStop: h.structuralStop, structuralTarget: h.structuralTarget,
-      plan, updatedAt: h.updatedAt
+      plan, ladder, updatedAt: h.updatedAt
     };
   }
 
