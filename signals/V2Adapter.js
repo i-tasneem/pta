@@ -28,12 +28,16 @@ class V2Adapter {
     this.futVol = new Map();         // instrument -> RollingWindow
     this.setups = new Map();         // instrument -> latest active setups (UI)
     this.lastKnown = new Map();      // hypothesis id -> { entry, stop, target, direction, archetype }
+    this.shadows = new Map();        // hypothesis id -> running shadow record
+    this.pendingOutcomes = [];       // non-triggered setups awaiting a would-be outcome
+    this.lifecycleOpts = (config && config.v2 && config.v2.lifecycle) || {};
+    this.shadowWindowMs = (config && config.v2 && config.v2.shadowWindowMs) || 90 * 60000;
   }
 
   engineFor(instrument) {
     let e = this.engines.get(instrument);
     if (!e) {
-      e = new this.engine.SetupEngine(instrument, {});
+      e = new this.engine.SetupEngine(instrument, this.lifecycleOpts);
       this.engines.set(instrument, e);
       this.futVol.set(instrument, new this.engine.RollingWindow(120));
     }
@@ -59,6 +63,9 @@ class V2Adapter {
       const views = result.hypotheses.map((h) => this.view(h, chain, state.atr));
       this.setups.set(chain.instrument, views);
 
+      // Shadow non-triggered setups to learn whether they'd have won
+      this.updateShadows(result, chain);
+
       // Track entry/levels for outcome accounting
       for (const h of result.hypotheses) {
         this.lastKnown.set(h.id, {
@@ -76,6 +83,71 @@ class V2Adapter {
       }
     } catch (err) {
       console.error(`V2Adapter ${chain && chain.instrument}:`, err.message);
+    }
+  }
+
+  // Track every setup's peak; when a non-triggered setup terminates, watch
+  // the instrument's spot to record whether its target/stop would have hit.
+  updateShadows(result, chain) {
+    try {
+      const RANK = { FORMING: 1, STRENGTHENING: 2, READY: 3, TRIGGERED: 4, ACTIVE: 5 };
+      for (const h of result.hypotheses) {
+        let sh = this.shadows.get(h.id);
+        if (!sh) sh = { id: h.id, symbol: chain.instrument, archetype: h.archetype, direction: h.direction, peakScore: 0, peakStage: 'FORMING', everTriggered: false };
+        sh.peakScore = Math.max(sh.peakScore, h.score);
+        if ((RANK[h.stage] || 0) > (RANK[sh.peakStage] || 0)) sh.peakStage = h.stage;
+        if (h.stage === 'TRIGGERED' || h.stage === 'ACTIVE') sh.everTriggered = true;
+        sh.entry = h.entryRef; sh.target = h.structuralTarget; sh.stop = h.structuralStop;
+        this.shadows.set(h.id, sh);
+      }
+
+      const TERM = new Set(['INVALIDATED', 'EXPIRED', 'TARGET_HIT', 'STOPLOSS_HIT']);
+      for (const t of result.transitions) {
+        if (!TERM.has(t.to)) continue;
+        const sh = this.shadows.get(t.id);
+        this.shadows.delete(t.id);
+        // Only setups that NEVER triggered are "missed" — start watching outcome
+        if (sh && !sh.everTriggered && (t.to === 'INVALIDATED' || t.to === 'EXPIRED') && sh.target > 0 && sh.stop > 0) {
+          this.pendingOutcomes.push({ ...sh, deadlineTs: (Number(chain.timestamp) || Date.now()) + this.shadowWindowMs, terminalReason: t.to });
+          if (this.pendingOutcomes.length > 500) this.pendingOutcomes.shift();
+        }
+      }
+
+      const spot = Number(chain.spotLtp) || 0;
+      const nowTs = Number(chain.timestamp) || Date.now();
+      const remaining = [];
+      for (const p of this.pendingOutcomes) {
+        if (p.symbol !== chain.instrument) { remaining.push(p); continue; }
+        let outcome = null;
+        if (p.direction === 'CE') {
+          if (spot >= p.target) outcome = 'WOULD_WIN';
+          else if (spot <= p.stop) outcome = 'WOULD_LOSE';
+        } else {
+          if (spot <= p.target) outcome = 'WOULD_WIN';
+          else if (spot >= p.stop) outcome = 'WOULD_LOSE';
+        }
+        if (!outcome && nowTs >= p.deadlineTs) outcome = 'WOULD_EXPIRE';
+        if (outcome) this.persistMissed(p, outcome).catch(() => {});
+        else remaining.push(p);
+      }
+      this.pendingOutcomes = remaining;
+    } catch (err) {
+      console.error('V2 shadow:', err.message);
+    }
+  }
+
+  async persistMissed(p, outcome) {
+    if (!this.db || !this.db.enabled) return;
+    try {
+      await this.db.query(
+        `INSERT INTO missed_setups
+           (id, symbol, archetype, direction, peak_score, peak_stage, entry, target, stop, shadow_outcome, terminal_reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (id) DO NOTHING`,
+        [p.id, p.symbol, p.archetype, p.direction, p.peakScore, p.peakStage, p.entry, p.target, p.stop, outcome, p.terminalReason]
+      );
+    } catch (err) {
+      console.error('persistMissed:', err.message);
     }
   }
 

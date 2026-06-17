@@ -125,6 +125,21 @@ module.exports = {
     url: process.env.DATABASE_URL || ''
   },
 
+  // V2 positioning engine — lifecycle thresholds (env-overridable so they can
+  // be tuned without code changes). readyScore lowered 70 -> 65.
+  v2: {
+    lifecycle: {
+      formingScore: parseFloat(process.env.V2_FORMING_SCORE) || 35,
+      strengtheningScore: parseFloat(process.env.V2_STRENGTHENING_SCORE) || 55,
+      readyScore: parseFloat(process.env.V2_READY_SCORE) || 65,
+      triggerBufferPct: parseFloat(process.env.V2_TRIGGER_BUFFER_PCT) || 0.0008,
+      breakMinParticipation: parseFloat(process.env.V2_BREAK_MIN_PARTICIPATION) || 0.5
+    },
+    // How long to keep shadowing a non-triggered setup to see if its target
+    // or stop would have been hit (missed-setup tracking).
+    shadowWindowMs: parseInt(process.env.V2_SHADOW_WINDOW_MS) || 90 * 60000
+  },
+
   sqlite: {
     path: process.env.SQLITE_PATH || './pta_archive.db',
     archiveInterval: 60000,

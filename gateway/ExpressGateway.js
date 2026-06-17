@@ -176,6 +176,43 @@ class ExpressGateway {
       }
     });
 
+    // Diagnostics — setups that never triggered but whose target/stop would
+    // have hit, bucketed by peak score (evidence to calibrate readyScore)
+    this.app.get('/api/diag/missed', async (req, res) => {
+      if (!this.db || !this.db.enabled) return res.json({ enabled: false });
+      const hours = Math.min(parseInt(req.query.hours) || 168, 2160);
+      const since = new Date(Date.now() - hours * 3600000);
+      try {
+        const [buckets, recent] = await Promise.all([
+          this.db.query(
+            `SELECT
+               CASE WHEN peak_score >= 80 THEN '80+'
+                    WHEN peak_score >= 70 THEN '70-80'
+                    WHEN peak_score >= 60 THEN '60-70'
+                    WHEN peak_score >= 50 THEN '50-60'
+                    ELSE '<50' END AS band,
+               count(*) FILTER (WHERE shadow_outcome = 'WOULD_WIN')::int  AS would_win,
+               count(*) FILTER (WHERE shadow_outcome = 'WOULD_LOSE')::int AS would_lose,
+               count(*) FILTER (WHERE shadow_outcome = 'WOULD_EXPIRE')::int AS would_expire,
+               count(*)::int AS total
+             FROM missed_setups WHERE created_at >= $1
+             GROUP BY band ORDER BY band DESC`, [since]),
+          this.db.query(
+            `SELECT id, symbol, archetype, direction, peak_score, peak_stage,
+                    shadow_outcome, terminal_reason, created_at
+               FROM missed_setups WHERE created_at >= $1
+              ORDER BY created_at DESC LIMIT 100`, [since])
+        ]);
+        const bands = buckets.rows.map((b) => {
+          const decided = b.would_win + b.would_lose;
+          return { ...b, winRatePct: decided > 0 ? Math.round((b.would_win / decided) * 1000) / 10 : null };
+        });
+        res.json({ enabled: true, windowHours: hours, bands, recent: recent.rows });
+      } catch (err) {
+        res.json({ enabled: true, error: err.message });
+      }
+    });
+
     // Diagnostics — trace a single opportunity's recent gate runs
     this.app.get('/api/diag/opportunity/:id', async (req, res) => {
       if (!this.db || !this.db.enabled) return res.json({ enabled: false });

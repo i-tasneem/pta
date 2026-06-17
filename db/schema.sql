@@ -124,6 +124,25 @@ CREATE INDEX IF NOT EXISTS idx_gate_audit_ts        ON gate_audit (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_gate_audit_symbol    ON gate_audit (symbol);
 CREATE INDEX IF NOT EXISTS idx_gate_audit_failed    ON gate_audit (failed_at_gate);
 
+-- Setups that reached FORMING+ but never TRIGGERED, with a shadow outcome:
+-- would their structural target/stop have been hit anyway? This is the
+-- evidence for calibrating readyScore per score band.
+CREATE TABLE IF NOT EXISTS missed_setups (
+  id              TEXT PRIMARY KEY,
+  symbol          TEXT,
+  archetype       TEXT,
+  direction       TEXT,
+  peak_score      DOUBLE PRECISION,
+  peak_stage      TEXT,
+  entry           DOUBLE PRECISION,
+  target          DOUBLE PRECISION,
+  stop            DOUBLE PRECISION,
+  shadow_outcome  TEXT,        -- WOULD_WIN | WOULD_LOSE | WOULD_EXPIRE
+  terminal_reason TEXT,        -- INVALIDATED | EXPIRED
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_missed_created ON missed_setups (created_at DESC);
+
 CREATE TABLE IF NOT EXISTS funnel_counters (
   day     DATE NOT NULL,
   metric  TEXT NOT NULL,
