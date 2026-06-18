@@ -58,9 +58,21 @@ class ExpressGateway {
         this.schema.health()
       );
 
+      // Stream-depth diagnostics so trend-data gaps are visible without login
+      const streams = {};
+      try {
+        const symbols = (this.config.instruments.indices || []).map(i => i.symbol);
+        for (const sym of symbols) {
+          const oiLen = await this.eventBus.client.xLen(this.schema.oiHistory(sym)).catch(() => 0);
+          const ohlcLen = await this.eventBus.client.xLen(this.schema.ohlc('5m', sym)).catch(() => 0);
+          streams[sym] = { oiHistory: oiLen, ohlc5m: ohlcLen };
+        }
+      } catch { /* best effort */ }
+
       res.json({
         status: 'ok',
-        ...health
+        ...health,
+        streams
       });
     });
 

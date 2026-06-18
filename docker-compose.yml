@@ -21,7 +21,10 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    # AOF + volume so OI/candle history streams survive restarts & redeploys
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -52,3 +55,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
