@@ -58,21 +58,38 @@ class ExpressGateway {
         this.schema.health()
       );
 
-      // Stream-depth diagnostics so trend-data gaps are visible without login
+      // Stream-depth + feed diagnostics so data gaps are visible without login
       const streams = {};
+      const ticks = {};
+      let futuresResolved = [];
       try {
         const symbols = (this.config.instruments.indices || []).map(i => i.symbol);
+
+        // Did we resolve the paired index futures? (source of volume + spread)
+        const prefix = this.config.redis.keyPrefix;
+        const futRaw = await this.eventBus.client.get(`${prefix}sys:futures:map`).catch(() => null);
+        if (futRaw) {
+          const m = JSON.parse(futRaw);
+          futuresResolved = Object.entries(m).map(([sym, f]) => `${sym}=${f.securityId}`);
+        }
+
         for (const sym of symbols) {
           const oiLen = await this.eventBus.client.xLen(this.schema.oiHistory(sym)).catch(() => 0);
           const ohlcLen = await this.eventBus.client.xLen(this.schema.ohlc('5m', sym)).catch(() => 0);
           streams[sym] = { oiHistory: oiLen, ohlc5m: ohlcLen };
+
+          // Live tick sample: 0 volume / 0 bid-ask = futures merge not flowing
+          const t = await this.eventBus.hgetall(this.schema.tick(sym));
+          ticks[sym] = { ltp: t.ltp || null, volume: t.volume || null, bid: t.bid || null, ask: t.ask || null };
         }
       } catch { /* best effort */ }
 
       res.json({
         status: 'ok',
         ...health,
-        streams
+        futuresResolved,
+        streams,
+        ticks
       });
     });
 
