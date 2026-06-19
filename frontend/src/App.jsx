@@ -26,7 +26,7 @@ const VIEWS = [
 export default function App() {
   const [view, setView] = useState('scanner');
   const [instruments, setInstruments] = useState([]);
-  const [signals, setSignals] = useState([]);
+  const [v2setups, setV2Setups] = useState([]);
   const [selected, setSelected] = useState('NIFTY');
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
@@ -86,12 +86,12 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const [scr, sig] = await Promise.all([
+      const [scr, v2] = await Promise.all([
         api.screener(),
-        api.activeSignals(true)
+        api.v2Setups()
       ]);
       setInstruments(scr.instruments || []);
-      setSignals(sig.signals || []);
+      setV2Setups(v2.setups || []);
     } catch (err) {
       console.error('Fetch error:', err.message);
     }
@@ -104,12 +104,7 @@ export default function App() {
         fetchData();
         break;
       case 'v2:transition':
-        if (msg.data?.to === 'TRIGGERED') playBeep();
-        break;
-      case 'signal:state':
-        setSignals(prev =>
-          prev.map(s => s.id === msg.data?.signalId ? { ...s, status: msg.data.to } : s)
-        );
+        if (msg.data?.to === 'TRIGGERED') { playBeep(); fetchData(); }
         break;
       default:
         break;
@@ -135,7 +130,7 @@ export default function App() {
     setView('analytics');
   };
 
-  const triggeredCount = signals.filter(s => s.status === 'TRIGGERED').length;
+  const triggeredCount = v2setups.filter(s => s.stage === 'TRIGGERED' || s.stage === 'ACTIVE').length;
 
   if (authState === 'checking') {
     return <div className="min-h-screen bg-slate-950 text-slate-500 flex items-center justify-center text-sm">Loading…</div>;
@@ -196,8 +191,8 @@ export default function App() {
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 py-4 pb-20 md:pb-6">
         {view === 'scanner' && <ScannerView instruments={instruments} onAnalyze={goAnalyze} />}
-        {view === 'setups' && <SetupsView />}
-        {view === 'signals' && <SignalsView signals={signals} />}
+        {view === 'setups' && <SetupsView setups={v2setups} />}
+        {view === 'signals' && <SignalsView setups={v2setups} />}
         {view === 'analytics' && (
           <AnalyticsView instruments={instruments} selected={selected} onSelect={setSelected} />
         )}
