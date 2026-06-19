@@ -80,7 +80,12 @@ class ExpressGateway {
 
           // Live tick sample: 0 volume / 0 bid-ask = futures merge not flowing
           const t = await this.eventBus.hgetall(this.schema.tick(sym));
-          ticks[sym] = { ltp: t.ltp || null, volume: t.volume || null, bid: t.bid || null, ask: t.ask || null };
+          // Latest 5m candle volume — the real input to volumeStrength
+          const last5m = await this.eventBus.xlatest(this.schema.ohlc('5m', sym), 1).catch(() => []);
+          ticks[sym] = {
+            ltp: t.ltp || null, volume: t.volume || null, bid: t.bid || null, ask: t.ask || null,
+            lastCandleVol: last5m.length ? (last5m[0].message.volume || '0') : null
+          };
         }
       } catch { /* best effort */ }
 
@@ -415,6 +420,33 @@ class ExpressGateway {
     });
   }
 
+  // Liquidity from the ATM OPTION's spread (the tradeable instrument), not the
+  // underlying — index/futures spreads are always <1% so the old underlying-
+  // based score pegged at 95 for everything.
+  async optionLiquidity(symbol, atmStrike) {
+    if (!atmStrike) return 0;
+    try {
+      const chain = await this.eventBus.hgetall(this.schema.optionChain(symbol));
+      const ce = this.safeParse(chain[`ce:${atmStrike}`], null);
+      const pe = this.safeParse(chain[`pe:${atmStrike}`], null);
+      const spreadOf = (leg) => {
+        if (!leg || !(leg.ltp > 0) || !(leg.ask > 0)) return null;
+        return ((leg.ask - leg.bid) / leg.ltp) * 100;
+      };
+      const spreads = [spreadOf(ce), spreadOf(pe)].filter((s) => s != null);
+      if (spreads.length === 0) return 0;
+      const spread = spreads.reduce((a, b) => a + b, 0) / spreads.length;
+      if (spread < 0.5) return 95;
+      if (spread < 1) return 85;
+      if (spread < 2) return 70;
+      if (spread < 3.5) return 55;
+      if (spread < 6) return 35;
+      return 20;
+    } catch {
+      return 0;
+    }
+  }
+
   async buildInstrumentCard(symbol) {
     const [state, opp, tick, signal] = await Promise.all([
       this.eventBus.hgetall(this.schema.marketState(symbol)),
@@ -424,6 +456,8 @@ class ExpressGateway {
     ]);
 
     const hasSignal = signal && Object.keys(signal).length > 0;
+    const atmStrike = parseFloat(state.atmStrike) || 0;
+    const optLiquidity = await this.optionLiquidity(symbol, atmStrike);
 
     return {
       instrument: symbol,
@@ -455,7 +489,7 @@ class ExpressGateway {
       score: parseFloat(opp.score) || 0,
       direction: opp.direction || null,
       opportunityState: opp.state || null,
-      liquidityScore: parseFloat(opp.liquidityScore) || 0,
+      liquidityScore: optLiquidity || parseFloat(opp.liquidityScore) || 0,
       componentScores: opp.score ? {
         trend: parseFloat(opp.trendScore) || 0,
         momentum: parseFloat(opp.momentumScore) || 0,
