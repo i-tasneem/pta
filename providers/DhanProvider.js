@@ -493,10 +493,11 @@ class DhanProvider extends MarketDataProvider {
     return candles;
   }
 
-  // Streams the scrip master (too large to buffer) and resolves the
-  // nearest-expiry index future per underlying symbol
+  // Streams the DETAILED scrip master and resolves the nearest-expiry index
+  // future per underlying symbol. Columns (verified against the live CSV):
+  // EXCH_ID, SECURITY_ID, INSTRUMENT(=FUTIDX), UNDERLYING_SYMBOL, SM_EXPIRY_DATE
   async findIndexFutures(symbols) {
-    const url = 'https://images.dhan.co/api-data/api-scrip-master.csv';
+    const url = 'https://images.dhan.co/api-data/api-scrip-master-detailed.csv';
     const response = await axios.get(url, { responseType: 'stream' });
     const rl = readline.createInterface({ input: response.data, crlfDelay: Infinity });
 
@@ -506,28 +507,32 @@ class DhanProvider extends MarketDataProvider {
     let cols = null;
 
     for await (const line of rl) {
-      const values = line.split(',').map(v => v.replace(/^"|"$/g, '').trim());
+      const values = line.split(',');
 
       if (!cols) {
         cols = {};
-        values.forEach((h, i) => { cols[h] = i; });
+        values.forEach((h, i) => { cols[h.trim()] = i; });
         continue;
       }
 
-      const instrumentName = values[cols['SEM_INSTRUMENT_NAME']] || values[cols['SEM_EXCH_INSTRUMENT_TYPE']];
-      if (instrumentName !== 'FUTIDX') continue;
+      const get = (name) => {
+        const i = cols[name];
+        return i == null ? '' : (values[i] || '').trim();
+      };
 
-      const underlying = values[cols['SM_SYMBOL_NAME']] || '';
+      if (get('INSTRUMENT') !== 'FUTIDX') continue;
+
+      const underlying = get('UNDERLYING_SYMBOL');
       if (!wanted.has(underlying)) continue;
 
-      const expiry = (values[cols['SEM_EXPIRY_DATE']] || '').slice(0, 10);
+      const expiry = get('SM_EXPIRY_DATE').slice(0, 10);
       if (!expiry || expiry < today) continue;
 
-      const exch = values[cols['SEM_EXM_EXCH_ID']] || 'NSE';
+      const exch = get('EXCH_ID');
       const current = best.get(underlying);
       if (!current || expiry < current.expiry) {
         best.set(underlying, {
-          securityId: values[cols['SEM_SMST_SECURITY_ID']],
+          securityId: get('SECURITY_ID'),
           exchangeSegment: exch === 'BSE' ? 'BSE_FNO' : 'NSE_FNO',
           expiry
         });
