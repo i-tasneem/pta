@@ -83,6 +83,18 @@ class EventBus {
     return flat;
   }
 
+  // node-redis v4 xAdd expects the message as a Record<string,string> object,
+  // not a flattened [k, v, ...] array. Passing the array stores fields under
+  // numeric keys ({0:'open',1:'1',...}), so build a stringified object instead.
+  _stringifyMessage(fields) {
+    const out = {};
+    for (const [k, v] of Object.entries(fields)) {
+      if (v === undefined || v === null) continue;
+      out[k] = String(v);
+    }
+    return out;
+  }
+
   // Hash operations
   async hset(key, fields) {
     const flatFields = typeof fields === 'object' && !Array.isArray(fields)
@@ -102,7 +114,7 @@ class EventBus {
 
   // Stream operations
   async xadd(key, id, fields) {
-    return await this.client.xAdd(key, id, this._stringifyFields(fields));
+    return await this.client.xAdd(key, id, this._stringifyMessage(fields));
   }
 
   async xrange(key, start, end, count) {
