@@ -174,14 +174,28 @@ class V2Adapter {
     try {
       const entries = await this.eventBus.xlatest(this.schema.ohlc(tf, instrument), count);
       return (entries || [])
-        .map((e) => {
-          const m = e.message || e;
-          return { close: Number(m.close), high: Number(m.high), low: Number(m.low), open: Number(m.open) };
-        })
-        .filter((c) => Number.isFinite(c.close) && c.close > 0);
+        .map((e) => this.parseCandle(e && e.message))
+        .filter((c) => c && Number.isFinite(c.close) && c.close > 0);
     } catch {
       return [];
     }
+  }
+
+  // Robustly extract OHLC from a stream message. The EventBus flattens fields to
+  // an array before XADD, so node-redis stores them under numeric keys
+  // ({0:'open',1:'23385',2:'high',...}) rather than named keys. Handle both the
+  // flattened form and a proper {open,high,low,close} form.
+  parseCandle(m) {
+    if (!m || typeof m !== 'object') return null;
+    if (m.close !== undefined) {
+      return { open: Number(m.open), high: Number(m.high), low: Number(m.low), close: Number(m.close) };
+    }
+    // Flattened: numeric keys hold alternating label/value pairs.
+    const vals = Object.keys(m).sort((a, b) => a - b).map((k) => m[k]);
+    const obj = {};
+    for (let i = 0; i + 1 < vals.length; i += 2) obj[vals[i]] = vals[i + 1];
+    if (obj.close === undefined) return null;
+    return { open: Number(obj.open), high: Number(obj.high), low: Number(obj.low), close: Number(obj.close) };
   }
 
   // Compute the EMA(5,9,15,50,200)+BB(20,2) levels on 5m/15m plus the daily

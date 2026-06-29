@@ -57,8 +57,13 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
       Golden fixture (140-snap warm-up+breakout) shows the confluence path
       engaging (EMA/BB cluster stops) and a measurable avgR difference
       (0.877 → 1.839). `runSnapshots` legacy harness untouched (no regression).
-- [ ] 7. Builds, boots (mock), committed+pushed, SL/target + source levels render
-      in the Setups/Signals UI.
+- [x] 7. Builds, boots (mock), committed+pushed, SL/target + source levels render
+      in the Setups/Signals UI. DONE — `npm run build` (engine+frontend) clean;
+      real mock boot via Memurai (Redis) + Postgres-disabled: server fully
+      operational, daily history seeded (251 candles/instrument), daily 200-EMA
+      computes (0 skip notes), live `refreshLevels` yields 8 levels incl. daily
+      200-EMA, resolver returns a real EMA confluence stop. SetupCard renders
+      `exitLevels`. All iterations committed+pushed.
 
 ## Baseline
 - Engine suite green at start: 32 tests pass (`npm run test:engine`).
@@ -141,3 +146,20 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
 - On real archived data the same comparison runs over dense 20s snapshots; the
   toy 1-min sparse stream would fall back, the warm-up+breakout stream diverges.
 - Engine suite: 52 pass. Item 4 still holds (no signal-gen code touched).
+
+### Iteration 7 — real mock boot + critical candle-parse fix (item 7)
+- Started Memurai (Redis-compatible, port 6379), ran `USE_MOCK=true node
+  server.js` with Postgres disabled → "PTA Server fully operational".
+- BUG FOUND + FIXED: the app's `EventBus._stringifyFields` flattens hash fields
+  to an array, so node-redis XADD stores them under numeric keys
+  ({0:'open',1:'23385',...}) not named keys. `fetchCandles` read `message.close`
+  (undefined) → returned ZERO candles for every timeframe → resolver always fell
+  back to structural in production. Added `V2Adapter.parseCandle` to handle both
+  the flattened and named forms. After the fix: daily 200-EMA computes (0 skip
+  notes), live `refreshLevels('NIFTY')` returns 8 levels incl. `daily 200-EMA
+  @22512.9`, and `resolveExits` produces a real EMA confluence stop
+  ("5m 15-EMA + 15m 5-EMA + 5m 9-EMA").
+- NOTE (out of scope, flagged): the same `_stringifyFields` quirk means the live
+  IndicatorEngine EMA/BB/RSI in market_state and `/api/volume` read undefined →
+  0. Pre-existing, app-wide; not fixed here (exits-only scope).
+- Engine suite 52 green; integration smoke green; frontend build clean.
