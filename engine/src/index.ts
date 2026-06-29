@@ -33,3 +33,5 @@ export { SetupEngine } from './lifecycle/lifecycle';
 export type { SetupStage, Hypothesis, Transition, SnapshotResult, LifecycleOptions } from './lifecycle/lifecycle';
 export { ema, bollinger, computeLevels, EMA_PERIODS, BB_PERIOD, BB_STDDEV } from './levels/levels';
 export type { Level, LevelKind, LevelTimeframe, LevelInputs, BollingerResult, Candle } from './levels/levels';
+export { resolveExits } from './levels/confluence';
+export type { ResolveInputs, ResolvedSide, ResolvedExits } from './levels/confluence';

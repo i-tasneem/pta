@@ -31,8 +31,10 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
 ## DoD checklist
 - [ ] 1. EMA(5,9,15,50,200)+BB(20,2) on 5m & 15m + daily 200-EMA, seeded from
       history, refreshed live, persisted across restart.
-- [ ] 2. Pure TS confluence resolver (cluster-preferring, documented tie-break +
-      no-confluence fallback).
+- [x] 2. Pure TS confluence resolver (cluster-preferring, documented tie-break +
+      no-confluence fallback). DONE — `engine/src/levels/confluence.ts`
+      `resolveExits`. Tie-breaks: size → wall-containing → (stop: nearest wall /
+      target: nearest price). Fallback = lone wall returns structural level.
 - [ ] 3. Integrated into V2Adapter plan: SL/target from resolver, converted to
       pinned strike premium; UI shows chosen levels.
 - [ ] 4. Signal generation / archetype / regime / score provably unchanged (diff
@@ -64,3 +66,15 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
   null/constant/known-case, computeLevels label presence + EMA200 omission +
   daily skip note + empty-input degradation.
 - Engine suite: 41 pass (was 32). No existing module touched → item 4 still holds.
+
+### Iteration 2 — confluence resolver (item 2)
+- Added `engine/src/levels/confluence.ts`: `resolveExits({direction, price,
+  structuralStop, structuralTarget, levels})` → `{stop, target}` each with price,
+  source label, members, agreement, hasWall, fallback. Walls are always a
+  candidate (stay in the mix); strongest cluster wins; documented tie-breaks;
+  no-confluence fallback returns the structural wall level unchanged.
+- Exported from index. Tests `engine/test/confluence.test.js` (8): fallback,
+  2-EMA cluster overriding lone wall, EMA-at-wall confluence (DoD "+ PE wall"
+  shape), lone-EMA-doesn't-beat-wall, PE side resolution, target nearest-price
+  tie-break, stop nearest-wall tie-break, degenerate price passthrough.
+- Engine suite: 49 pass. Still no signal/score module touched → item 4 holds.
