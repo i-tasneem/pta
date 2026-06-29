@@ -11,16 +11,21 @@
 // each entry's original ID and order. Entries already in named form (written
 // after the fix shipped) are passed through untouched, so mixed streams are fine.
 //
-// Streams written via xadd: ohlc:*, oi_history:*, tick:*. The market:events
-// stream is written with a proper object (named fields) and has consumer groups;
-// per-entry detection skips it. The affected streams have no consumer groups, so
-// rebuilding them is safe.
+// Streams written via xadd are the small, bounded ones: ohlc:* (MAXLEN 500) and
+// oi_history:* (MAXLEN 1000). The market:events stream is large and UNBOUNDED but
+// is written with a proper object (named fields) and has consumer groups, so it is
+// detected as already-named and skipped. (tick:* is a hash, not a stream.)
+//
+// Memory-safe at production scale: the migrate/skip decision reads only the FIRST
+// entry of each stream (COUNT 1), so a huge named stream like market:events is
+// never loaded into memory. Streams that DO need converting are read and rewritten
+// in bounded batches.
 //
 // Usage:
 //   node scripts/migrate-stream-fields.js                 # dry-run (default)
 //   node scripts/migrate-stream-fields.js --apply         # perform the migration
-//   REDIS_URL=redis://127.0.0.1:6379 node scripts/migrate-stream-fields.js --apply
-//   REDIS_KEY_MATCH='pta:*' node scripts/migrate-stream-fields.js --apply
+//   REDIS_URL=redis://redis:6379 node scripts/migrate-stream-fields.js --apply
+//   REDIS_KEY_MATCH='pta::ohlc:*' node scripts/migrate-stream-fields.js --apply
 //
 // Idempotent: a second run finds nothing to convert and is a no-op.
 
@@ -29,6 +34,7 @@ const { createClient } = require('redis');
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 const MATCH = process.env.REDIS_KEY_MATCH || '*';
 const APPLY = process.argv.includes('--apply');
+const BATCH = Number(process.env.MIGRATE_BATCH) || 1000;
 const TMP_SUFFIX = '::__migrating';
 
 // True when every field key of a stream entry is a numeric string ('0','1',...),
@@ -57,6 +63,37 @@ async function scanStreamKeys(client) {
   return keys.sort();
 }
 
+// Read only the oldest entry to decide shape, without loading the whole stream.
+async function firstEntryShape(client, key) {
+  const first = await client.xRange(key, '-', '+', { COUNT: 1 });
+  if (first.length === 0) return 'empty';
+  return isNumericKeyed(first[0].message) ? 'numeric' : 'named';
+}
+
+// Rewrite a numeric-keyed stream into a temp stream in bounded batches, then
+// RENAME over the original. Original IDs and order are preserved; entries already
+// in named form pass through unchanged.
+async function rewriteStream(client, key) {
+  const tmp = `${key}${TMP_SUFFIX}`;
+  await client.del(tmp); // clean any aborted previous run
+  let lastId = null;
+  let count = 0;
+  while (true) {
+    const start = lastId ? `(${lastId}` : '-'; // exclusive of the last id seen
+    const batch = await client.xRange(key, start, '+', { COUNT: BATCH });
+    if (batch.length === 0) break;
+    for (const e of batch) {
+      const named = isNumericKeyed(e.message) ? toNamed(e.message) : e.message;
+      await client.xAdd(tmp, e.id, named);
+      count++;
+    }
+    lastId = batch[batch.length - 1].id;
+    if (batch.length < BATCH) break;
+  }
+  await client.rename(tmp, key);
+  return count;
+}
+
 async function migrate() {
   const client = createClient({ url: REDIS_URL });
   client.on('error', (e) => console.error('redis error:', e.message));
@@ -70,41 +107,29 @@ async function migrate() {
   const streamKeys = await scanStreamKeys(client);
   let converted = 0;
   let skipped = 0;
-  let totalEntriesConverted = 0;
+  let totalEntries = 0;
 
   for (const key of streamKeys) {
-    const entries = await client.xRange(key, '-', '+');
-    if (entries.length === 0) { skipped++; continue; }
-
-    const numericEntries = entries.filter((e) => isNumericKeyed(e.message)).length;
-    if (numericEntries === 0) {
+    const shape = await firstEntryShape(client, key);
+    if (shape !== 'numeric') {
       skipped++;
-      console.log(`  skip   ${key}  (${entries.length} entries already named)`);
+      const len = await client.xLen(key);
+      console.log(`  skip   ${key}  (${len} entries, ${shape})`);
       continue;
     }
 
+    const len = await client.xLen(key);
+    console.log(`  FIX    ${key}  (${len} entries, numeric-keyed)`);
     converted++;
-    totalEntriesConverted += numericEntries;
-    console.log(`  FIX    ${key}  (${numericEntries}/${entries.length} numeric-keyed)`);
-
-    if (!APPLY) continue;
-
-    const tmp = `${key}${TMP_SUFFIX}`;
-    await client.del(tmp); // clean any aborted previous run
-    for (const e of entries) {
-      const named = isNumericKeyed(e.message) ? toNamed(e.message) : e.message;
-      // Preserve the original entry ID and order (entries are ascending).
-      await client.xAdd(tmp, e.id, named);
-    }
-    // RENAME atomically replaces the original (consumer-group-free) stream.
-    await client.rename(tmp, key);
+    if (!APPLY) { totalEntries += len; continue; }
+    totalEntries += await rewriteStream(client, key);
   }
 
   console.log('');
   console.log(`Streams scanned:        ${streamKeys.length}`);
   console.log(`Streams ${APPLY ? 'converted' : 'to convert'}:  ${converted}`);
   console.log(`Streams skipped:        ${skipped}`);
-  console.log(`Entries ${APPLY ? 'converted' : 'to convert'}:  ${totalEntriesConverted}`);
+  console.log(`Entries ${APPLY ? 'converted' : 'to convert'}:  ${totalEntries}`);
   if (!APPLY && converted > 0) {
     console.log('\nDry-run only. Re-run with --apply to perform the migration.');
   }
