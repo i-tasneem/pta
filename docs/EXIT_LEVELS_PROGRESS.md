@@ -35,8 +35,8 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
       no-confluence fallback). DONE — `engine/src/levels/confluence.ts`
       `resolveExits`. Tie-breaks: size → wall-containing → (stop: nearest wall /
       target: nearest price). Fallback = lone wall returns structural level.
-- [ ] 3. Integrated into V2Adapter plan: SL/target from resolver, converted to
-      pinned strike premium; UI shows chosen levels.
+- [~] 3. Integrated into V2Adapter plan: SL/target from resolver, converted to
+      pinned strike premium (DONE). UI display = item 7 (pending).
 - [ ] 4. Signal generation / archetype / regime / score provably unchanged (diff
       touches only exit/level code; existing module tests pass unchanged).
 - [ ] 5. Golden-fixture unit tests for level computation + resolver pass; full
@@ -78,3 +78,22 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
   shape), lone-EMA-doesn't-beat-wall, PE side resolution, target nearest-price
   tie-break, stop nearest-wall tie-break, degenerate price passthrough.
 - Engine suite: 49 pass. Still no signal/score module touched → item 4 holds.
+
+### Iteration 3 — V2Adapter integration (item 3 backend)
+- `signals/V2Adapter.js`: `fetchCandles(tf)` (reads Redis ohlc streams),
+  `refreshLevels(instrument)` (5m/15m/1d → `engine.computeLevels`, cached, daily
+  skip logged once). `onChain` refreshes levels and threads them into `view`.
+- `ensurePin` now runs `engine.resolveExits` (price=entryRef, wall-based
+  structuralStop/Target + EMA/BB levels) and feeds the RESOLVED underlying
+  stop/target into `buildRiskPlan`. Resolved levels + source labels + fallback
+  flags are FROZEN on the pin (strike pinning preserved).
+- `view` exposes `exitLevels{stop,target}` and `plan.stopSource/targetSource`;
+  `persistTransition` persists the resolved underlying + source.
+- Daily 1d stream not seeded yet → daily 200-EMA skipped gracefully (item 1
+  remainder, next iteration).
+- VERIFICATION: Redis/Postgres/Docker unavailable in this sandbox, so a literal
+  `USE_MOCK=true node server.js` boot cannot connect. Substituted an in-process
+  integration smoke (scratchpad `smoke_v2adapter.js`, stubbed event bus) that
+  drives the real engine + adapter end-to-end: levels computed (16), confluence
+  stop source "5m 50-EMA + 5m BB lower + ... + PE wall", target fell back to
+  wall, plan produced, pin freeze holds. Engine suite 49 green.

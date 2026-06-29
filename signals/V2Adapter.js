@@ -31,6 +31,8 @@ class V2Adapter {
     this.shadows = new Map();        // hypothesis id -> running shadow record
     this.pendingOutcomes = [];       // non-triggered setups awaiting a would-be outcome
     this.pinnedStrikes = new Map();  // hypothesis id -> pinned strike + frozen plan
+    this.levelsCache = new Map();     // instrument -> latest EMA/BB exit Level[]
+    this.lastDailyNote = new Map();   // instrument -> last logged daily-skip note (de-dupe)
     this.lifecycleOpts = (config && config.v2 && config.v2.lifecycle) || {};
     this.shadowWindowMs = (config && config.v2 && config.v2.shadowWindowMs) || 90 * 60000;
   }
@@ -60,8 +62,12 @@ class V2Adapter {
       const snapshot = this.toSnapshot(chain, state.maxPain);
       const result = this.engineFor(chain.instrument).onSnapshot(snapshot, futVolumeDelta, participation);
 
+      // Refresh EMA/BB exit levels on the underlying (used by the confluence
+      // resolver inside view()/ensurePin). Exits only — never feeds the engine.
+      const levels = await this.refreshLevels(chain.instrument);
+
       // Build UI views (strike + risk plan) for active setups
-      const views = result.hypotheses.map((h) => this.view(h, chain, state.atr));
+      const views = result.hypotheses.map((h) => this.view(h, chain, state.atr, levels));
       this.setups.set(chain.instrument, views);
 
       // Shadow non-triggered setups to learn whether they'd have won
@@ -162,6 +168,46 @@ class V2Adapter {
     }
   }
 
+  // Read close-bearing candles from a Redis ohlc stream (node-redis v4 returns
+  // { id, message } entries). Newest-last, capped at `count`.
+  async fetchCandles(tf, instrument, count) {
+    try {
+      const entries = await this.eventBus.xlatest(this.schema.ohlc(tf, instrument), count);
+      return (entries || [])
+        .map((e) => {
+          const m = e.message || e;
+          return { close: Number(m.close), high: Number(m.high), low: Number(m.low), open: Number(m.open) };
+        })
+        .filter((c) => Number.isFinite(c.close) && c.close > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  // Compute the EMA(5,9,15,50,200)+BB(20,2) levels on 5m/15m plus the daily
+  // 200-EMA, on the underlying. Cached per instrument; degrades gracefully when
+  // a timeframe lacks history (the daily skip is logged once, not every poll).
+  async refreshLevels(instrument) {
+    try {
+      const [fiveMin, fifteenMin, daily] = await Promise.all([
+        this.fetchCandles('5m', instrument, 220),
+        this.fetchCandles('15m', instrument, 220),
+        this.fetchCandles('1d', instrument, 220)
+      ]);
+      const { levels, notes } = this.engine.computeLevels({ fiveMin, fifteenMin, daily });
+      const dailyNote = notes.find((n) => n.includes('daily 200-EMA'));
+      if (dailyNote && this.lastDailyNote.get(instrument) !== dailyNote) {
+        this.lastDailyNote.set(instrument, dailyNote);
+        console.warn(`V2 exit-levels ${instrument}: ${dailyNote}`);
+      }
+      this.levelsCache.set(instrument, levels);
+      return levels;
+    } catch (err) {
+      console.error(`V2 exit-levels ${instrument}:`, err.message);
+      return this.levelsCache.get(instrument) || [];
+    }
+  }
+
   toSnapshot(chain, maxPain) {
     return {
       instrument: chain.instrument,
@@ -223,32 +269,47 @@ class V2Adapter {
   // Pin the traded strike ONCE, the first time a setup is seen. SL/target are
   // frozen on that strike's premium and never re-selected — so when spot drifts
   // and ATM moves, we keep following the original strike, not the new ATM.
-  ensurePin(h, chain, atr) {
+  ensurePin(h, chain, atr, levels) {
     let pin = this.pinnedStrikes.get(h.id);
     if (pin) return pin;
     const ladder = this.strikeLadder(chain, h.direction);
     const chosen = ladder.find((x) => x.label === 'ATM') || ladder[0];
     if (!chosen || !(chosen.premium > 0)) return null;
 
+    // Confluence resolver: refine the wall-based structural SL/target using the
+    // EMA/BB levels on the underlying. Walls stay in the mix; no-confluence
+    // falls back to the structural level. The resolved underlying levels are
+    // then translated to the pinned strike's premium (delta+gamma), and FROZEN.
+    const lv = levels || this.levelsCache.get(h.instrument) || [];
+    const ex = this.engine.resolveExits({
+      direction: h.direction, price: h.entryRef,
+      structuralStop: h.structuralStop, structuralTarget: h.structuralTarget,
+      levels: lv
+    });
+
     const deltaSigned = h.direction === 'CE' ? Math.abs(chosen.delta || 0.5) : -Math.abs(chosen.delta || 0.5);
     const premiumATR = this.engine.premiumATRfromUnderlying(atr || 50, deltaSigned) || 10;
     const plan = this.engine.buildRiskPlan({
       direction: h.direction, entryUnderlying: h.entryRef,
-      structuralStop: h.structuralStop, structuralTarget: h.structuralTarget,
+      structuralStop: ex.stop.price, structuralTarget: ex.target.price,
       optionPremium: chosen.premium, deltaSigned, gamma: 0, premiumATR
     });
     pin = {
       strike: chosen.strike, label: chosen.label, delta: chosen.delta,
       entryPremium: chosen.premium, stopPremium: plan.stopPremium, targetPremium: plan.targetPremium,
       rr: plan.rr, valid: plan.valid, riskInPremiumATR: plan.riskInPremiumATR,
+      stopUnderlying: ex.stop.price, targetUnderlying: ex.target.price,
+      stopSource: ex.stop.source, targetSource: ex.target.source,
+      stopMembers: ex.stop.members, targetMembers: ex.target.members,
+      stopFallback: ex.stop.fallback, targetFallback: ex.target.fallback,
       pinnedAt: Number(chain.timestamp) || Date.now()
     };
     this.pinnedStrikes.set(h.id, pin);
     return pin;
   }
 
-  view(h, chain, atr) {
-    const pin = this.ensurePin(h, chain, atr);
+  view(h, chain, atr, levels) {
+    const pin = this.ensurePin(h, chain, atr, levels);
     const ladder = this.strikeLadder(chain, h.direction);
     let plan = null;
     if (pin) {
@@ -258,15 +319,21 @@ class V2Adapter {
         entryPremium: pin.entryPremium,
         currentPremium: leg ? Number(leg.ltp) || 0 : null,
         stopPremium: pin.stopPremium, targetPremium: pin.targetPremium,
-        rr: pin.rr, valid: pin.valid, riskInPremiumATR: pin.riskInPremiumATR
+        rr: pin.rr, valid: pin.valid, riskInPremiumATR: pin.riskInPremiumATR,
+        stopSource: pin.stopSource, targetSource: pin.targetSource
       };
     }
+    // Resolved exit levels on the underlying + which level(s) chose them.
+    const exitLevels = pin ? {
+      stop: { underlying: pin.stopUnderlying, source: pin.stopSource, members: pin.stopMembers, fallback: pin.stopFallback },
+      target: { underlying: pin.targetUnderlying, source: pin.targetSource, members: pin.targetMembers, fallback: pin.targetFallback }
+    } : null;
     return {
       id: h.id, instrument: h.instrument, archetype: h.archetype, direction: h.direction,
       stage: h.stage, score: h.score, confidence: this.confidence(h),
       reasons: h.reasons, thesis: h.thesis,
       entryRef: h.entryRef, structuralStop: h.structuralStop, structuralTarget: h.structuralTarget,
-      plan, ladder, updatedAt: h.updatedAt
+      exitLevels, plan, ladder, updatedAt: h.updatedAt
     };
   }
 
@@ -305,8 +372,8 @@ class V2Adapter {
           t.id, t.instrument, t.archetype, null, t.direction, t.to, t.score,
           (this.confidence(t).value),
           JSON.stringify({ ref: view.entryRef, strike: view.plan && view.plan.strike, premium: view.plan && view.plan.entryPremium }),
-          JSON.stringify(view.plan ? { premium: view.plan.stopPremium, underlying: view.structuralStop } : null),
-          JSON.stringify(view.plan ? { premium: view.plan.targetPremium, underlying: view.structuralTarget } : null),
+          JSON.stringify(view.plan ? { premium: view.plan.stopPremium, underlying: (view.exitLevels && view.exitLevels.stop.underlying) ?? view.structuralStop, source: view.plan.stopSource } : null),
+          JSON.stringify(view.plan ? { premium: view.plan.targetPremium, underlying: (view.exitLevels && view.exitLevels.target.underlying) ?? view.structuralTarget, source: view.plan.targetSource } : null),
           JSON.stringify(t.reasons || []),
           JSON.stringify([]),
           t.to === 'TRIGGERED' ? new Date(t.ts) : null
