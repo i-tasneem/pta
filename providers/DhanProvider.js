@@ -493,6 +493,34 @@ class DhanProvider extends MarketDataProvider {
     return candles;
   }
 
+  // Daily (EOD) candles via /v2/charts/historical. Used to seed the daily
+  // 200-EMA exit level (needs ~200 trading days). Same array response shape.
+  async getDailyCandles(securityId, exchangeSegment, instrumentType, fromDate, toDate) {
+    const response = await this._request('POST', '/v2/charts/historical', {
+      securityId: String(securityId),
+      exchangeSegment,
+      instrument: instrumentType,
+      expiryCode: 0,
+      fromDate,
+      toDate
+    });
+
+    const d = response.data || {};
+    const candles = [];
+    const n = (d.timestamp || []).length;
+    for (let i = 0; i < n; i++) {
+      candles.push({
+        timestamp: d.timestamp[i] * 1000,
+        open: d.open[i],
+        high: d.high[i],
+        low: d.low[i],
+        close: d.close[i],
+        volume: d.volume?.[i] || 0
+      });
+    }
+    return candles;
+  }
+
   // Streams the DETAILED scrip master and resolves the nearest-expiry index
   // future per underlying symbol. Columns (verified against the live CSV):
   // EXCH_ID, SECURITY_ID, INSTRUMENT(=FUTIDX), UNDERLYING_SYMBOL, SM_EXPIRY_DATE

@@ -158,6 +158,28 @@ class MockProvider extends MarketDataProvider {
     return this.generateMockHistoricalData(`${interval}m`);
   }
 
+  // ~250 synthetic daily candles so the daily 200-EMA exit level is available
+  // in mock mode (otherwise it degrades gracefully and is skipped).
+  async getDailyCandles(securityId, exchangeSegment, instrumentType, fromDate, toDate) {
+    const candles = [];
+    const dayMs = 86400000;
+    const now = Date.now();
+    let price = 22000;
+    for (let i = 250; i >= 0; i--) {
+      const change = (Math.random() - 0.5) * 120;
+      price += change;
+      candles.push({
+        timestamp: now - i * dayMs,
+        open: price - change / 2,
+        high: price + Math.abs(change) + Math.random() * 40,
+        low: price - Math.abs(change) - Math.random() * 40,
+        close: price,
+        volume: Math.floor(Math.random() * 5000000)
+      });
+    }
+    return candles;
+  }
+
   async findIndexFutures(symbols) {
     return {};
   }

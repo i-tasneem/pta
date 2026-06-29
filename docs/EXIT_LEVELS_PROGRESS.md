@@ -29,8 +29,12 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
 - `backtest/Backtester.js` — before/after exits comparison.
 
 ## DoD checklist
-- [ ] 1. EMA(5,9,15,50,200)+BB(20,2) on 5m & 15m + daily 200-EMA, seeded from
-      history, refreshed live, persisted across restart.
+- [x] 1. EMA(5,9,15,50,200)+BB(20,2) on 5m & 15m + daily 200-EMA, seeded from
+      history, refreshed live, persisted across restart. DONE — 5m/15m levels
+      computed from existing live-refreshed Redis ohlc streams; daily 1d stream
+      seeded at boot (`server.seedDailyHistory` → `provider.getDailyCandles`),
+      persisted via Redis AOF, recomputed every poll. Degrades gracefully (skip
+      + log) when daily history is unavailable.
 - [x] 2. Pure TS confluence resolver (cluster-preferring, documented tie-break +
       no-confluence fallback). DONE — `engine/src/levels/confluence.ts`
       `resolveExits`. Tie-breaks: size → wall-containing → (stop: nearest wall /
@@ -97,3 +101,13 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
   drives the real engine + adapter end-to-end: levels computed (16), confluence
   stop source "5m 50-EMA + 5m BB lower + ... + PE wall", target fell back to
   wall, plan produced, pin freeze holds. Engine suite 49 green.
+
+### Iteration 4 — daily 200-EMA seeding (completes item 1)
+- `DhanProvider.getDailyCandles` (POST /v2/charts/historical, EOD).
+- `MockProvider.getDailyCandles` (~250 synthetic daily candles).
+- `server.seedDailyHistory(inst)` seeds `pta:ohlc:1d:<symbol>` at boot (last 300
+  daily candles, ~400 calendar-day window), paced vs rate limit; failures logged,
+  never block. V2Adapter.fetchCandles('1d') already reads this stream.
+- Verified: MockProvider daily (251 candles) → `computeLevels` yields
+  `daily 200-EMA @ 22649`, no skip note. server.js parses + runs to the Redis
+  connect (ECONNREFUSED expected — no Redis in sandbox). Engine suite green.

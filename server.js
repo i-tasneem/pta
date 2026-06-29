@@ -335,6 +335,9 @@ class PTAServer {
           await this.seedCandleStream(tf, inst.symbol, aggregated.slice(-500));
         }
 
+        // Seed daily candles for the daily 200-EMA exit level (needs ~200 days).
+        await this.seedDailyHistory(inst);
+
         await this.scanners.primeIndicators(inst.symbol);
         console.log(`✓ History bootstrapped: ${inst.symbol} (${candles.length} 1m candles)`);
       } catch (err) {
@@ -344,6 +347,30 @@ class PTAServer {
 
       // Historical data API is rate limited; pace the requests
       await new Promise(r => setTimeout(r, 1200));
+    }
+  }
+
+  // Seed ~250 trading days of daily candles into the 1d ohlc stream so the
+  // engine's daily 200-EMA exit level is available. Degrades gracefully: a
+  // failure is logged and the daily level is simply skipped (never blocks).
+  async seedDailyHistory(inst) {
+    if (typeof this.provider.getDailyCandles !== 'function') return;
+    const toDate = new Date().toISOString().slice(0, 10);
+    const fromDate = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
+    try {
+      await new Promise(r => setTimeout(r, 1200)); // pace vs the rate limit
+      const daily = await this.provider.getDailyCandles(
+        inst.securityId, inst.exchangeSegment || 'IDX_I', 'INDEX', fromDate, toDate
+      );
+      if (daily && daily.length) {
+        await this.seedCandleStream('1d', inst.symbol, daily.slice(-300));
+        console.log(`✓ Daily history: ${inst.symbol} (${daily.length} daily candles)`);
+      } else {
+        console.warn(`Daily history ${inst.symbol}: none returned — daily 200-EMA will be skipped`);
+      }
+    } catch (err) {
+      const detail = err.response ? JSON.stringify(err.response.data) : err.message;
+      console.warn(`Daily history ${inst.symbol}: ${detail} — daily 200-EMA will be skipped`);
     }
   }
 
