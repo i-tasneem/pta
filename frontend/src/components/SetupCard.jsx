@@ -12,6 +12,15 @@ export const ARCHETYPE_LABELS = {
 
 const STAGES = ['FORMING', 'STRENGTHENING', 'READY', 'TRIGGERED', 'ACTIVE'];
 
+// Compact source label for an exit level: keep it short when many levels agree.
+function fmtSource(side) {
+  if (!side) return '';
+  if (side.fallback) return 'OI wall';
+  const m = side.members || [];
+  if (m.length <= 2) return m.join(' + ');
+  return `${m[0]} +${m.length - 1} more`;
+}
+
 function StageRail({ stage }) {
   const idx = STAGES.indexOf(stage);
   return (
@@ -86,6 +95,18 @@ export default function SetupCard({ s }) {
         <div className="text-[11px] text-slate-500 mt-1">
           Entry ₹{fmtPrice(s.plan.entryPremium)} · R:R {s.plan.rr} · risk {s.plan.riskInPremiumATR} premium-ATR · pinned strike
           {s.plan.valid === false && <span className="text-amber-400"> · below threshold</span>}
+        </div>
+      )}
+      {s.exitLevels && (
+        <div className="mt-1.5 grid grid-cols-2 gap-2 text-[11px]">
+          <div className="text-slate-500">
+            <span className="text-rose-300 font-medium">SL</span> @ {fmtPrice(s.exitLevels.stop.underlying)}
+            <span className="text-slate-600"> · {fmtSource(s.exitLevels.stop)}</span>
+          </div>
+          <div className="text-slate-500">
+            <span className="text-emerald-300 font-medium">Tgt</span> @ {fmtPrice(s.exitLevels.target.underlying)}
+            <span className="text-slate-600"> · {fmtSource(s.exitLevels.target)}</span>
+          </div>
         </div>
       )}
 

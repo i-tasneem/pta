@@ -39,8 +39,8 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
       no-confluence fallback). DONE — `engine/src/levels/confluence.ts`
       `resolveExits`. Tie-breaks: size → wall-containing → (stop: nearest wall /
       target: nearest price). Fallback = lone wall returns structural level.
-- [~] 3. Integrated into V2Adapter plan: SL/target from resolver, converted to
-      pinned strike premium (DONE). UI display = item 7 (pending).
+- [x] 3. Integrated into V2Adapter plan: SL/target from resolver, converted to
+      pinned strike premium (DONE). UI shows chosen levels + source (SetupCard).
 - [ ] 4. Signal generation / archetype / regime / score provably unchanged (diff
       touches only exit/level code; existing module tests pass unchanged).
 - [ ] 5. Golden-fixture unit tests for level computation + resolver pass; full
@@ -111,3 +111,11 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
 - Verified: MockProvider daily (251 candles) → `computeLevels` yields
   `daily 200-EMA @ 22649`, no skip note. server.js parses + runs to the Redis
   connect (ECONNREFUSED expected — no Redis in sandbox). Engine suite green.
+
+### Iteration 5 — UI display of chosen exit levels (item 3 UI / item 7 UI)
+- `frontend/src/components/SetupCard.jsx`: new row under the premium plan showing
+  `SL @ <underlying> · <source>` and `Tgt @ <underlying> · <source>` from
+  `s.exitLevels`. `fmtSource` compacts long clusters ("5m 50-EMA +3 more") and
+  shows "OI wall" on the no-confluence fallback.
+- Frontend `vite build` clean (47 modules). Backend already emits `exitLevels` +
+  `plan.stopSource/targetSource` (iteration 3).
