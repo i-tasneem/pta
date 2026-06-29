@@ -11,7 +11,7 @@ class IndicatorEngine {
     if (closes.length < period) return 0;
 
     const multiplier = 2 / (period + 1);
-    let ema = this.SMA(closes.slice(0, period));
+    let ema = this.SMA(closes.slice(0, period), period);
 
     for (let i = period; i < closes.length; i++) {
       ema = (closes[i] - ema) * multiplier + ema;
@@ -61,11 +61,13 @@ class IndicatorEngine {
     const middle = slice.reduce((a, b) => a + b, 0) / period;
     const variance = slice.reduce((sum, val) => sum + Math.pow(val - middle, 2), 0) / period;
     const std = Math.sqrt(variance);
+    const upper = middle + stdDev * std;
+    const lower = middle - stdDev * std;
 
     return {
-      upper: middle + stdDev * std,
+      upper,
       middle,
-      lower: middle - stdDev * std,
+      lower,
       width: (upper - lower) / middle
     };
   }
