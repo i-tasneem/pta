@@ -5,6 +5,32 @@
 // computes performance metrics. Pure runSnapshots() is unit-testable without a DB.
 const engine = require('../engine/dist/index.js');
 
+// Builds OHLC bars from the replayed spot path so the confluence resolver has
+// EMA/BB levels during a backtest (archived snapshots carry spot, not candles).
+class SpotCandles {
+  constructor(intervalMs, cap = 600) {
+    this.interval = intervalMs;
+    this.cap = cap;
+    this.bars = [];
+    this.curStart = null;
+  }
+  update(ts, spot) {
+    if (!(spot > 0)) return;
+    const start = Math.floor(ts / this.interval) * this.interval;
+    if (this.curStart === null || start !== this.curStart) {
+      this.bars.push({ open: spot, high: spot, low: spot, close: spot });
+      this.curStart = start;
+      if (this.bars.length > this.cap) this.bars.shift();
+    } else {
+      const b = this.bars[this.bars.length - 1];
+      b.high = Math.max(b.high, spot);
+      b.low = Math.min(b.low, spot);
+      b.close = spot;
+    }
+  }
+  candles() { return this.bars; }
+}
+
 class Backtester {
   constructor(db) {
     this.db = db;
@@ -97,6 +123,81 @@ class Backtester {
     return { trades, metrics: Backtester.computeMetrics(trades) };
   }
 
+  // Forward-simulated exits: book on TRIGGERED, then walk the spot path and close
+  // when the chosen target/stop is touched. With useConfluence the stop/target
+  // come from the confluence resolver (EMA/BB + walls) on spot-derived candles;
+  // otherwise they are the raw structural wall levels. Both modes share this exit
+  // walk, so the only difference is WHERE the levels sit — a fair before/after.
+  simulateExits(instrument, snapshots, opts = {}, useConfluence = false) {
+    const eng = new engine.SetupEngine(instrument, opts.lifecycle || {});
+    const futWin = new engine.RollingWindow(120);
+    const agg5 = new SpotCandles(300000);
+    const agg15 = new SpotCandles(900000);
+    const aggD = new SpotCandles(86400000);
+    const open = new Map();
+    const trades = [];
+
+    for (const snap of snapshots) {
+      agg5.update(snap.ts, snap.spot);
+      agg15.update(snap.ts, snap.spot);
+      aggD.update(snap.ts, snap.spot);
+
+      const fv = snap.futVolume || 0;
+      const participation = futWin.percentileRank(fv);
+      futWin.push(fv);
+
+      const res = eng.onSnapshot(snap, fv, participation);
+
+      // Close any open trade whose target/stop the spot has now touched.
+      for (const [id, o] of [...open]) {
+        const hit = o.direction === 'CE'
+          ? (snap.spot >= o.target ? 'TARGET_HIT' : snap.spot <= o.stop ? 'STOPLOSS_HIT' : null)
+          : (snap.spot <= o.target ? 'TARGET_HIT' : snap.spot >= o.stop ? 'STOPLOSS_HIT' : null);
+        if (!hit) continue;
+        open.delete(id);
+        const riskU = Math.abs(o.entry - o.stop) || 1;
+        const r = hit === 'TARGET_HIT' ? Math.abs(o.target - o.entry) / riskU : -1;
+        trades.push({
+          id, archetype: o.archetype, direction: o.direction, outcome: hit,
+          entry: o.entry, exit: snap.spot, r, durationMs: snap.ts - o.ts,
+          stopSource: o.stopSource, targetSource: o.targetSource
+        });
+      }
+
+      // Book new entries on TRIGGERED with the chosen exit levels.
+      for (const t of res.transitions) {
+        if (t.to !== 'TRIGGERED' || open.has(t.id)) continue;
+        const h = res.hypotheses.find((x) => x.id === t.id);
+        if (!h) continue;
+        let stop = h.structuralStop, target = h.structuralTarget;
+        let stopSource = 'wall (structural)', targetSource = 'wall (structural)';
+        if (useConfluence) {
+          const { levels } = engine.computeLevels({ fiveMin: agg5.candles(), fifteenMin: agg15.candles(), daily: aggD.candles() });
+          const ex = engine.resolveExits({
+            direction: h.direction, price: snap.spot,
+            structuralStop: h.structuralStop, structuralTarget: h.structuralTarget, levels
+          });
+          stop = ex.stop.price; target = ex.target.price;
+          stopSource = ex.stop.source; targetSource = ex.target.source;
+        }
+        open.set(t.id, {
+          entry: snap.spot, stop, target, direction: h.direction,
+          archetype: h.archetype, ts: snap.ts, stopSource, targetSource
+        });
+      }
+    }
+
+    return { trades, metrics: Backtester.computeMetrics(trades) };
+  }
+
+  // Before/after exit comparison on the same snapshot stream.
+  compareExits(instrument, snapshots, opts = {}) {
+    return {
+      before: this.simulateExits(instrument, snapshots, opts, false), // structural walls
+      after: this.simulateExits(instrument, snapshots, opts, true)    // EMA/BB confluence
+    };
+  }
+
   static computeMetrics(trades) {
     const n = trades.length;
     if (n === 0) {
@@ -125,19 +226,24 @@ class Backtester {
   async runFromDb(symbol, fromISO, toISO, opts = {}) {
     const snapshots = await this.loadSnapshots(symbol, fromISO, toISO);
     const result = this.runSnapshots(symbol, snapshots, opts);
+    // Before/after exit comparison (structural walls vs EMA/BB confluence).
+    const comparison = this.compareExits(symbol, snapshots, opts);
 
     if (this.db && this.db.enabled) {
       try {
         await this.db.query(
           `INSERT INTO backtest_runs (strategy, params, period_start, period_end, metrics)
            VALUES ($1, $2, $3, $4, $5)`,
-          [opts.strategy || 'ALL', JSON.stringify(opts), new Date(fromISO), new Date(toISO), JSON.stringify(result.metrics)]
+          [opts.strategy || 'ALL',
+           JSON.stringify({ ...opts, exitComparison: true }),
+           new Date(fromISO), new Date(toISO),
+           JSON.stringify({ engineTransitions: result.metrics, exitsBefore: comparison.before.metrics, exitsAfter: comparison.after.metrics })]
         );
       } catch (err) {
         console.error('backtest_runs insert:', err.message);
       }
     }
-    return { ...result, snapshots: snapshots.length };
+    return { ...result, comparison, snapshots: snapshots.length };
   }
 }
 

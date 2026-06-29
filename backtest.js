@@ -34,6 +34,13 @@ function parseArgs(argv) {
   console.log(`trades: ${res.trades.length}`);
   console.log(JSON.stringify(res.metrics, null, 2));
 
+  if (res.comparison) {
+    const fmt = (m) => `trades ${m.trades} · win ${(m.winRate * 100).toFixed(1)}% · avgR ${m.avgR.toFixed(3)} · expectancy ${m.expectancy.toFixed(3)} · PF ${Number(m.profitFactor).toFixed(2)}`;
+    console.log('\nExit comparison (same entries, different SL/target placement):');
+    console.log(`  BEFORE structural walls : ${fmt(res.comparison.before.metrics)}`);
+    console.log(`  AFTER  EMA/BB confluence: ${fmt(res.comparison.after.metrics)}`);
+  }
+
   await db.close();
   process.exit(0);
 })().catch((err) => {

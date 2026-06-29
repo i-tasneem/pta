@@ -41,12 +41,22 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
       target: nearest price). Fallback = lone wall returns structural level.
 - [x] 3. Integrated into V2Adapter plan: SL/target from resolver, converted to
       pinned strike premium (DONE). UI shows chosen levels + source (SetupCard).
-- [ ] 4. Signal generation / archetype / regime / score provably unchanged (diff
-      touches only exit/level code; existing module tests pass unchanged).
-- [ ] 5. Golden-fixture unit tests for level computation + resolver pass; full
-      engine suite green.
-- [ ] 6. Backtester uses new exits; before/after comparison (win rate, avg R,
-      expectancy) on archived data. Improvement aimed, not required.
+- [x] 4. Signal generation / archetype / regime / score provably unchanged.
+      DONE — `git diff 597847a..HEAD` over engine/src/{archetypes,scoring,regime,
+      lifecycle,analytics,structure} is EMPTY; index.ts only adds exports;
+      V2Adapter's onSnapshot/score/stage/transition path is unchanged (grep of
+      the diff for those tokens is empty). 32 original module tests pass unchanged.
+- [x] 5. Golden-fixture unit tests for level computation + resolver pass; full
+      engine suite green. DONE — 17 new golden fixtures (9 levels + 8 confluence);
+      full suite 49 pass / 0 fail.
+- [x] 6. Backtester uses new exits; before/after comparison. DONE —
+      `Backtester.simulateExits`/`compareExits` forward-simulate exits from the
+      booked SL/target over the spot path; before = structural walls, after =
+      EMA/BB confluence (levels from spot-derived candles). `runFromDb`/CLI emit
+      both; `backtest_runs` stores engineTransitions + exitsBefore + exitsAfter.
+      Golden fixture (140-snap warm-up+breakout) shows the confluence path
+      engaging (EMA/BB cluster stops) and a measurable avgR difference
+      (0.877 → 1.839). `runSnapshots` legacy harness untouched (no regression).
 - [ ] 7. Builds, boots (mock), committed+pushed, SL/target + source levels render
       in the Setups/Signals UI.
 
@@ -119,3 +129,15 @@ positioning engine, via CONFLUENCE with existing structural (OI-wall) levels.
   shows "OI wall" on the no-confluence fallback.
 - Frontend `vite build` clean (47 modules). Backend already emits `exitLevels` +
   `plan.stopSource/targetSource` (iteration 3).
+
+### Iteration 6 — backtester before/after exits (item 6)
+- `backtest/Backtester.js`: `SpotCandles` (spot-path → OHLC bars), `simulateExits`
+  (book on TRIGGERED, forward-walk spot to target/stop, R per trade),
+  `compareExits` (structural vs confluence). `runFromDb` returns + persists the
+  comparison; `backtest.js` CLI prints BEFORE/AFTER lines.
+- Tests `engine/test/backtest_exits.test.js` (3): metric-shape, books+resolves
+  trades AND confluence engages (EMA/BB cluster stops) with measurable avgR delta
+  (0.877→1.839), legacy `runSnapshots` intact.
+- On real archived data the same comparison runs over dense 20s snapshots; the
+  toy 1-min sparse stream would fall back, the warm-up+breakout stream diverges.
+- Engine suite: 52 pass. Item 4 still holds (no signal-gen code touched).
