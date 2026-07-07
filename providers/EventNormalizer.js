@@ -26,6 +26,7 @@ class EventNormalizer {
       low: num(rawTick.dayLow ?? rawTick.low),
       open: num(rawTick.dayOpen ?? rawTick.open),
       prevClose: num(rawTick.prevClose ?? rawTick.previousClose),
+      futLtp: num(rawTick.futLtp), // paired future's last price (basis input)
       timestamp: Date.now()
     };
   }

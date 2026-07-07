@@ -55,34 +55,37 @@ test('expiry afternoon => EXPIRY_GRAVITY allowing only the pin', () => {
   assert.deepStrictEqual(r.allowed, ['EXPIRY_PIN']);
 });
 
-test('IV spike => EVENT_CHAOS, stand down', () => {
+test('IV spike => EVENT_CHAOS only after persisting two snapshots', () => {
   const rc = new RegimeClassifier({ ivSpikeZ: 1.5 });
   // seed a low-IV baseline
   for (let i = 0; i < 8; i++) {
     rc.classify(
-      { ready: true, flowState: 'CORRIDOR', netWriterFlow: 0, priceDelta: 0, peCentroid: 22900, ceCentroid: 23100, ceWalls: [], peWalls: [] },
+      { ready: true, flowState: 'CORRIDOR', netWriterFlow: 0, priceDelta: 0, smoothedPriceDelta: 0, peCentroid: 22900, ceCentroid: 23100, ceWalls: [], peWalls: [] },
       snap({ ts: tsAtIST('2026-06-15', 10, i), strikes: ladder({ 23000: [100, 100] }, { 23000: 12 }) })
     );
   }
-  // now a big IV jump
-  const r = rc.classify(
-    { ready: true, flowState: 'CORRIDOR', netWriterFlow: 0, priceDelta: 0, peCentroid: 22900, ceCentroid: 23100, ceWalls: [], peWalls: [] },
-    snap({ ts: tsAtIST('2026-06-15', 10, 9), strikes: ladder({ 23000: [100, 100] }, { 23000: 30 }) })
-  );
-  assert.strictEqual(r.regime, 'EVENT_CHAOS');
-  assert.deepStrictEqual(r.allowed, []);
+  const spikeAnalytics = { ready: true, flowState: 'CORRIDOR', netWriterFlow: 0, priceDelta: 0, smoothedPriceDelta: 0, peCentroid: 22900, ceCentroid: 23100, ceWalls: [], peWalls: [] };
+  // a single-snapshot IV jump must NOT nuke every open setup (poll noise)
+  const first = rc.classify(spikeAnalytics,
+    snap({ ts: tsAtIST('2026-06-15', 10, 9), strikes: ladder({ 23000: [100, 100] }, { 23000: 30 }) }));
+  assert.notStrictEqual(first.regime, 'EVENT_CHAOS');
+  // a persisting spike IS an event — stand down
+  const second = rc.classify(spikeAnalytics,
+    snap({ ts: tsAtIST('2026-06-15', 10, 10), strikes: ladder({ 23000: [100, 100] }, { 23000: 30 }) }));
+  assert.strictEqual(second.regime, 'EVENT_CHAOS');
+  assert.deepStrictEqual(second.allowed, []);
 });
 
 test('one-sided put writing + support ratcheting => TREND_BULL', () => {
   const rc = new RegimeClassifier({ trendNWF: 0.8 });
   // first call seeds lastPeCentroid
   rc.classify(
-    { ready: true, flowState: 'BULL_CONFIRM', netWriterFlow: 1.5, priceDelta: 10, peCentroid: 22900, ceCentroid: 23100, ceWalls: [], peWalls: [] },
+    { ready: true, flowState: 'BULL_CONFIRM', netWriterFlow: 1.5, priceDelta: 10, smoothedPriceDelta: 10, peCentroid: 22900, ceCentroid: 23100, ceWalls: [], peWalls: [] },
     snap({ strikes: ladder({ 23000: [100, 100] }) })
   );
   // second: support centroid moved up, price up, strong NWF
   const r = rc.classify(
-    { ready: true, flowState: 'BULL_CONFIRM', netWriterFlow: 1.5, priceDelta: 10, peCentroid: 22950, ceCentroid: 23100, ceWalls: [], peWalls: [] },
+    { ready: true, flowState: 'BULL_CONFIRM', netWriterFlow: 1.5, priceDelta: 10, smoothedPriceDelta: 10, peCentroid: 22950, ceCentroid: 23100, ceWalls: [], peWalls: [] },
     snap({ spot: 23010, strikes: ladder({ 23000: [100, 100] }) })
   );
   assert.strictEqual(r.regime, 'TREND_BULL');

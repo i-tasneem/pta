@@ -102,7 +102,7 @@ class PTAServer {
 }, this.eventBus.client);
       await this.tokenManager.initialize();
       config.provider.accessToken = await this.tokenManager.getToken();
-      console.log('✓ Dhan token generated via TOTP');
+      console.log('✓ Dhan token ready');
     } else if (process.env.USE_MOCK !== 'true' && !config.provider.accessToken) {
       console.warn('⚠ No Dhan access token or TOTP secret configured. Set DHAN_ACCESS_TOKEN or DHAN_TOTP_SECRET env var.');
     }
@@ -113,6 +113,21 @@ class PTAServer {
       console.log('✓ MockProvider initialized (test mode)');
     } else {
       this.provider = new DhanProvider(config.provider);
+    }
+
+    // Keep the provider's token fresh. Scheduled refreshes previously updated
+    // only the TokenManager, so REST/WS kept using the boot-time token until
+    // it expired (~24h) and the app silently died before market open.
+    if (this.tokenManager) {
+      this.tokenManager.onToken = (t) => { if (this.provider) this.provider.accessToken = t; };
+      // Single-flight 401 recovery: concurrent failures share one regeneration.
+      this.provider.onAuthError = () => {
+        if (!this._tokenRecovery) {
+          this._tokenRecovery = this.tokenManager.invalidate()
+            .finally(() => { this._tokenRecovery = null; });
+        }
+        return this._tokenRecovery;
+      };
     }
     this.normalizer = new EventNormalizer(this.schema, this.eventBus);
 
@@ -149,8 +164,30 @@ class PTAServer {
 
     const instruments = config.instruments.indices;
 
-    // Resolve current-month index futures (volume/spread source for indices)
+    // Resolve current-month index futures (volume/spread source for indices).
+    // Discovery used to run exactly once at boot; one bad download meant a
+    // whole session with no futures volume/basis. Retry until it succeeds.
     this.futuresPairs = await this.discoverFutures(instruments);
+    if (this.futuresPairs.length === 0) {
+      console.warn('⚠ Index futures unresolved — volume/basis degraded; retrying every 10min');
+      this.futuresRetryTimer = setInterval(async () => {
+        try {
+          const pairs = await this.discoverFutures(instruments);
+          if (pairs.length === 0) return;
+          this.futuresPairs = pairs;
+          clearInterval(this.futuresRetryTimer);
+          this.futuresRetryTimer = null;
+          try {
+            await this.provider.subscribeFutures(pairs);
+            console.log('✓ Index futures resolved on retry and subscribed');
+          } catch (e) {
+            console.warn('Futures resolved; subscription deferred to next reconnect:', e.message);
+          }
+        } catch (e) {
+          console.error('Futures discovery retry failed:', e.message);
+        }
+      }, 10 * 60000);
+    }
 
     const connectProvider = async () => {
       await this.provider.connect();
@@ -177,9 +214,19 @@ class PTAServer {
       }
     }
 
+    // Per-symbol accumulators drained by the chain poll. The engine needs the
+    // futures volume over the WHOLE ~20s chain interval; reading the last tick
+    // hash gave it a ~1-second slice, making ease-of-movement and the
+    // participation percentile meaningless noise.
+    this.futVolAccum = new Map();  // symbol -> futures volume since last chain poll
+    this.futLtpLatest = new Map(); // symbol -> latest futures LTP (basis input)
+
     this.provider.on('tick', async (tick) => {
       const timer = this.perf.startTimer('tick_processing');
       const normalized = this.normalizer.normalizeTick(tick);
+      this.futVolAccum.set(normalized.instrument,
+        (this.futVolAccum.get(normalized.instrument) || 0) + (normalized.volume || 0));
+      if (normalized.futLtp > 0) this.futLtpLatest.set(normalized.instrument, normalized.futLtp);
       await this.normalizer.writeTick(normalized);
       await this.scanners.onTickFromProvider(normalized);
       this.perf.endTimer(timer);
@@ -258,6 +305,8 @@ class PTAServer {
       if (Object.keys(map).length > 0) {
         await this.eventBus.client.set(cacheKey, JSON.stringify(map), { EX: 24 * 60 * 60 });
         console.log('✓ Index futures resolved:', Object.entries(map).map(([s, f]) => `${s}=${f.securityId}(${f.expiry})`).join(', '));
+      } else {
+        console.warn('⚠ Futures discovery returned no matches for', symbols.join(','));
       }
       return this.futuresMapToPairs(map, instruments);
     } catch (err) {
@@ -422,7 +471,8 @@ class PTAServer {
   }
 
   startChainPolling(instruments) {
-    const expiries = new Map(); // symbol -> nearest expiry
+    const expiries = new Map(); // symbol -> { value, day } — refetched daily
+    const istDay = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
     let i = 0;
 
     this.chainTimer = setInterval(async () => {
@@ -430,12 +480,17 @@ class PTAServer {
       i++;
 
       try {
-        if (!expiries.has(inst.symbol)) {
+        // Refresh the nearest expiry each IST day. Caching it forever meant
+        // that after a weekly expiry passed, the poll kept requesting a dead
+        // contract, got empty data, and the instrument silently went dark
+        // until the next process restart.
+        const cached = expiries.get(inst.symbol);
+        if (!cached || cached.day !== istDay()) {
           if (typeof this.provider.getExpiryList !== 'function') {
-            expiries.set(inst.symbol, null);
+            expiries.set(inst.symbol, { value: null, day: istDay() });
           } else {
             const list = await this.provider.getExpiryList(inst.securityId, inst.exchangeSegment);
-            expiries.set(inst.symbol, list[0] || null);
+            expiries.set(inst.symbol, { value: list[0] || null, day: istDay() });
             return; // expiry list call shares the chain rate limit; fetch chain next slot
           }
         }
@@ -443,16 +498,18 @@ class PTAServer {
         const raw = await this.provider.getOptionChain(
           inst.securityId,
           inst.exchangeSegment,
-          expiries.get(inst.symbol)
+          expiries.get(inst.symbol).value
         );
 
         if (!raw || !raw.data || raw.data.length === 0) return;
 
         const chain = this.normalizer.normalizeOptionChain(raw, inst.symbol);
 
-        // Attach the paired future's volume delta (merged into the index tick)
-        const tick = await this.eventBus.hgetall(this.schema.tick(inst.symbol));
-        chain.futVolume = parseFloat(tick.volume) || 0;
+        // Futures flow over the full interval since the last chain poll for
+        // this symbol, plus the future's LTP for basis (fut - spot).
+        chain.futVolume = this.futVolAccum?.get(inst.symbol) || 0;
+        this.futVolAccum?.set(inst.symbol, 0);
+        chain.fut = this.futLtpLatest?.get(inst.symbol) || 0;
 
         await this.normalizer.writeOptionChain(chain);
         await this.scanners.onOptionChainFromProvider(chain);
@@ -469,6 +526,7 @@ class PTAServer {
     console.log('Shutting down PTA Server...');
     if (this.chainTimer) clearInterval(this.chainTimer);
     if (this.providerRetryTimer) clearInterval(this.providerRetryTimer);
+    if (this.futuresRetryTimer) clearInterval(this.futuresRetryTimer);
     if (this.analysisTimer) clearInterval(this.analysisTimer);
     if (this.telemetryTimer) clearInterval(this.telemetryTimer);
     await this.gateTelemetry?.flush().catch(() => {});

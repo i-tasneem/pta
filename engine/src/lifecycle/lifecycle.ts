@@ -43,6 +43,7 @@ export interface Hypothesis {
   scoreHistory: number[];
   missCount: number;
   holds: number; // consecutive snapshots evidence has held
+  stopViolations: number; // consecutive snapshots spot has sat beyond the structural stop (pre-trigger)
 }
 
 export interface Transition {
@@ -78,6 +79,8 @@ export interface LifecycleOptions {
   staleMs?: number;            // snapshot gap that invalidates everything
   maxAgeMs?: number;           // unreached-READY hypotheses expire
   readyTimeoutMs?: number;     // READY decays back if no trigger
+  stopBufferPct?: number;      // pre-trigger stop must be exceeded by this fraction of spot
+  stopViolationTolerance?: number; // consecutive violating snapshots before invalidation
 }
 
 const BREAK_ARCHETYPES: ArchetypeName[] = ['WALL_CAPITULATION_BREAK'];
@@ -100,10 +103,14 @@ export class SetupEngine {
       readyScore: opts.readyScore ?? 70,
       triggerBufferPct: opts.triggerBufferPct ?? 0.0008,
       breakMinParticipation: opts.breakMinParticipation ?? 0.5,
-      missTolerance: opts.missTolerance ?? 2,
+      // 2 was lethal at ~20s polling: any 3 flat snapshots (regime flap) killed
+      // the setup — prod median lifetime was ~60s with a 100% invalidation rate.
+      missTolerance: opts.missTolerance ?? 5,
       staleMs: opts.staleMs ?? 90000,
       maxAgeMs: opts.maxAgeMs ?? 45 * 60000,
-      readyTimeoutMs: opts.readyTimeoutMs ?? 15 * 60000
+      readyTimeoutMs: opts.readyTimeoutMs ?? 15 * 60000,
+      stopBufferPct: opts.stopBufferPct ?? 0.0005,
+      stopViolationTolerance: opts.stopViolationTolerance ?? 2
     };
   }
 
@@ -187,7 +194,8 @@ export class SetupEngine {
       updatedAt: snap.ts,
       scoreHistory: [scored.score],
       missCount: 0,
-      holds: 1
+      holds: 1,
+      stopViolations: 0
     };
   }
 
@@ -201,7 +209,6 @@ export class SetupEngine {
     stale: boolean
   ): void {
     h.updatedAt = snap.ts;
-    h.missCount = 0;
     h.holds += 1;
     h.score = scored.score;
     h.reasons = scored.reasons;
@@ -216,6 +223,7 @@ export class SetupEngine {
 
     // post-trigger: manage to target/stop
     if (h.stage === 'TRIGGERED' || h.stage === 'ACTIVE') {
+      h.missCount = 0;
       this.manageOpen(h, snap);
       return;
     }
@@ -224,6 +232,7 @@ export class SetupEngine {
     const rising = h.scoreHistory.length >= 2 && h.scoreHistory[h.scoreHistory.length - 1] >= h.scoreHistory[h.scoreHistory.length - 2];
 
     if (h.stage === 'READY') {
+      h.missCount = 0;
       // time-box READY; decay if the trigger never comes
       if (h.readyAt != null && snap.ts - h.readyAt > this.o.readyTimeoutMs) {
         h.stage = 'STRENGTHENING';
@@ -236,14 +245,19 @@ export class SetupEngine {
       return;
     }
 
-    // FORMING / STRENGTHENING advancement
+    // FORMING / STRENGTHENING advancement. missCount only resets on a
+    // forming-or-better score — resetting it unconditionally at the top of
+    // every detected update meant score decay could never invalidate.
     if (h.score >= this.o.readyScore) {
+      h.missCount = 0;
       h.stage = 'READY';
       h.readyAt = snap.ts;
       h.readyPrice = snap.spot;
     } else if (h.score >= this.o.strengtheningScore && rising) {
+      h.missCount = 0;
       h.stage = 'STRENGTHENING';
     } else if (h.score >= this.o.formingScore) {
+      h.missCount = 0;
       h.stage = 'FORMING';
     } else {
       h.missCount += 1;
@@ -270,10 +284,25 @@ export class SetupEngine {
     if (snap.ts - h.createdAt > this.o.maxAgeMs && h.stage !== 'TRIGGERED' && h.stage !== 'ACTIVE') {
       h.stage = 'EXPIRED'; return true;
     }
-    // structural stop violated before trigger = thesis already wrong
+    // Structural stop violated before trigger = thesis already wrong. Requires
+    // a buffer AND persistence: break setups legitimately form with spot inside
+    // the detection tolerance just beyond their wall-stop, and a bare touch
+    // test invalidated them on the very next snapshot (prod: 768 break setups
+    // shadow-recorded WOULD_LOSE instantly for this reason).
     if (h.stage !== 'TRIGGERED' && h.stage !== 'ACTIVE') {
-      const violated = h.direction === 'CE' ? snap.spot <= h.structuralStop : snap.spot >= h.structuralStop;
-      if (violated) { h.stage = 'INVALIDATED'; return true; }
+      const buf = snap.spot * this.o.stopBufferPct;
+      const violated = h.direction === 'CE'
+        ? snap.spot <= h.structuralStop - buf
+        : snap.spot >= h.structuralStop + buf;
+      if (violated) {
+        h.stopViolations += 1;
+        if (h.stopViolations >= this.o.stopViolationTolerance) {
+          h.stage = 'INVALIDATED';
+          return true;
+        }
+      } else {
+        h.stopViolations = 0;
+      }
     }
     return false;
   }

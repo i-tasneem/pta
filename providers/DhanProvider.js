@@ -259,6 +259,7 @@ class DhanProvider extends MarketDataProvider {
       if (fields.bidPrice) fut.bid = fields.bidPrice;
       if (fields.askPrice) fut.ask = fields.askPrice;
       if (fields.avgPrice) fut.atp = fields.avgPrice;
+      if (fields.lastPrice) fut.ltp = fields.lastPrice; // basis = fut.ltp - spot
       this.futuresState.set(mapping.symbol, fut);
       return;
     }
@@ -282,6 +283,7 @@ class DhanProvider extends MarketDataProvider {
       bidPrice: fut?.bid || state.bidPrice || 0,
       askPrice: fut?.ask || state.askPrice || 0,
       volume: volumeDelta,
+      futLtp: fut?.ltp || 0,
       openInterest: state.openInterest || 0,
       change,
       changePercent: prevClose ? (change / prevClose) * 100 : 0,
@@ -529,12 +531,21 @@ class DhanProvider extends MarketDataProvider {
     const response = await axios.get(url, { responseType: 'stream' });
     const rl = readline.createInterface({ input: response.data, crlfDelay: Infinity });
 
+    // readline's async iterator SWALLOWS input-stream errors — a reset or
+    // truncated download just ends the loop early with zero matches and no
+    // exception. Capture stream errors explicitly and fail loudly, so the
+    // caller can log and retry instead of silently running without futures.
+    let streamError = null;
+    response.data.on('error', (err) => { streamError = err; rl.close(); });
+
     const wanted = new Set(symbols);
     const today = new Date().toISOString().slice(0, 10);
     const best = new Map(); // symbol -> { securityId, exchangeSegment, expiry }
     let cols = null;
+    let lineCount = 0;
 
     for await (const line of rl) {
+      lineCount++;
       const values = line.split(',');
 
       if (!cols) {
@@ -567,6 +578,14 @@ class DhanProvider extends MarketDataProvider {
       }
     }
 
+    if (streamError) {
+      throw new Error(`scrip master stream failed after ${lineCount} lines: ${streamError.message}`);
+    }
+    if (best.size === 0) {
+      // The full file is ~200k lines with FUTIDX rows ~100k deep; zero matches
+      // almost always means a truncated download, not a real absence.
+      throw new Error(`scrip master parsed ${lineCount} lines but resolved 0 index futures (truncated download?)`);
+    }
     return Object.fromEntries(best);
   }
 
@@ -592,7 +611,7 @@ class DhanProvider extends MarketDataProvider {
     return records;
   }
 
-  async _request(method, endpoint, body = null) {
+  async _request(method, endpoint, body = null, isRetry = false) {
     await this._rateLimit();
 
     const url = `${this.restUrl}${endpoint}`;
@@ -606,7 +625,20 @@ class DhanProvider extends MarketDataProvider {
     const options = { method, url, headers };
     if (body) options.data = body;
 
-    return await axios(options);
+    try {
+      return await axios(options);
+    } catch (err) {
+      // Broker rejected the token — regenerate once (via server-supplied
+      // handler) and retry, so an expired token self-heals instead of failing
+      // every REST call until the next restart.
+      const status = err.response && err.response.status;
+      if (status === 401 && !isRetry && typeof this.onAuthError === 'function') {
+        const fresh = await this.onAuthError();
+        if (fresh) this.accessToken = fresh;
+        return this._request(method, endpoint, body, true);
+      }
+      throw err;
+    }
   }
 
   async _rateLimit() {

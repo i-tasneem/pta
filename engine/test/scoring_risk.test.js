@@ -12,14 +12,18 @@ test('full-strength evidence across all components scores 100', () => {
   assert.strictEqual(scoreEvidence(ev).score, 100);
 });
 
-test('partial evidence scores the weighted sum and collects reasons', () => {
+test('partial evidence normalizes to the achievable weight and collects reasons', () => {
   const ev = [
-    { component: 'wallBehavior', strength: 1, detail: 'wall capitulating' },   // 25
-    { component: 'writerFlow', strength: 0.5, detail: 'flow confirming' },     // 10
-    { component: 'futuresParticipation', strength: 0, detail: 'no volume' }    // 0
+    { component: 'wallBehavior', strength: 1, detail: 'wall capitulating' },   // 25 of 25
+    { component: 'writerFlow', strength: 0.5, detail: 'flow confirming' },     // 10 of 20
+    { component: 'futuresParticipation', strength: 0, detail: 'no volume' }    // 0 of 15
   ];
   const r = scoreEvidence(ev);
-  assert.strictEqual(r.score, 35);
+  // raw 35 over an achievable 60 -> 58.3; a missing component reduces the
+  // achievable weight instead of silently capping the archetype's ceiling
+  assert.strictEqual(r.score, 58.3);
+  assert.strictEqual(r.rawScore, 35);
+  assert.strictEqual(r.achievableWeight, 60);
   assert.deepStrictEqual(r.reasons, ['wall capitulating', 'flow confirming']);
 });
 

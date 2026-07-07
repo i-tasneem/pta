@@ -104,6 +104,7 @@ export interface TrackerOptions {
   risingEpsilonBps?: number; // price deadband in basis points of spot
   wallZ?: number;            // wall outlier threshold
   minBaseline?: number;      // samples before `ready` flips true
+  priceSmoothSpan?: number;  // snapshots the direction read spans (>=1)
 }
 
 // One per instrument. Feed it each chain snapshot (plus the future's volume
@@ -112,16 +113,19 @@ export class PositioningTracker {
   private last: ChainSnapshot | null = null;
   private vceWin: RollingWindow;
   private vpeWin: RollingWindow;
+  private spotHistory: number[] = [];
   private atmWindowSteps: number;
   private risingEpsilonBps: number;
   private wallZ: number;
   private minBaseline: number;
+  private priceSmoothSpan: number;
 
   constructor(opts: TrackerOptions = {}) {
     this.atmWindowSteps = opts.atmWindowSteps ?? 5;
     this.risingEpsilonBps = opts.risingEpsilonBps ?? 2;
     this.wallZ = opts.wallZ ?? 2;
     this.minBaseline = opts.minBaseline ?? 5;
+    this.priceSmoothSpan = Math.max(1, opts.priceSmoothSpan ?? 3);
     const cap = opts.windowCapacity ?? 60;
     this.vceWin = new RollingWindow(cap);
     this.vpeWin = new RollingWindow(cap);
@@ -135,12 +139,14 @@ export class PositioningTracker {
 
     if (!this.last) {
       this.last = snap;
+      this.spotHistory.push(snap.spot);
       return {
         ts: snap.ts,
         vCE: 0, vPE: 0, zvCE: 0, zvPE: 0,
         netWriterFlow: 0,
         flowState: 'WARMUP',
         priceDelta: 0,
+        smoothedPriceDelta: 0,
         easeOfMovement: 0,
         ceWalls, peWalls, ceCentroid, peCentroid,
         ready: false
@@ -159,8 +165,16 @@ export class PositioningTracker {
     const nwf = zvPE - zvCE;
 
     const priceDelta = snap.spot - this.last.spot;
+
+    // Direction over the last few snapshots, not one poll interval — a single
+    // flat 20s bar must not flip the flow state (that flapping was killing
+    // every setup within ~3 snapshots in prod).
+    this.spotHistory.push(snap.spot);
+    if (this.spotHistory.length > this.priceSmoothSpan + 1) this.spotHistory.shift();
+    const smoothedPriceDelta = snap.spot - this.spotHistory[0];
+
     const epsilon = (snap.spot * this.risingEpsilonBps) / 10000;
-    const flowState = classifyFlow(nwf, priceDelta, vCE, vPE, epsilon);
+    const flowState = classifyFlow(nwf, smoothedPriceDelta, vCE, vPE, epsilon);
     const eom = easeOfMovement(priceDelta, futVolumeDelta);
 
     this.last = snap;
@@ -171,6 +185,7 @@ export class PositioningTracker {
       netWriterFlow: nwf,
       flowState,
       priceDelta,
+      smoothedPriceDelta,
       easeOfMovement: eom,
       ceWalls, peWalls, ceCentroid, peCentroid,
       ready: this.vceWin.size >= this.minBaseline

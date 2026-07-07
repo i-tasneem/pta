@@ -54,6 +54,14 @@ function fut(ctx: ArchetypeContext): number {
   return clamp01(ctx.futParticipation ?? 0);
 }
 
+// Basis (fut - spot, index points) as a 0..1 anomaly strength: full strength
+// at 20bps of spot. Raw clamp01(points) saturated at 1 for any >=1pt basis.
+function basisStrength(basisPoints: number, spot: number): number {
+  if (spot <= 0) return 0;
+  const bps = (Math.abs(basisPoints) / spot) * 10000;
+  return clamp01(bps / 20);
+}
+
 // The wall being broken — the nearest outlier within a band of spot (so the
 // setup persists for the snapshots just after price crosses it), falling back
 // to the regime's corridor level when per-strike walls aren't supplied.
@@ -226,7 +234,7 @@ export const basisFlowDivergenceReversal: Archetype = {
         thesis: 'Rally sold into call writing, futures not confirming',
         evidence: [
           { component: 'writerFlow', strength: clamp01(-a.netWriterFlow / 3), detail: 'call writing into strength' },
-          { component: 'futuresParticipation', strength: clamp01(-r.basis), detail: 'futures discount (no confirmation)' },
+          { component: 'futuresParticipation', strength: basisStrength(r.basis, s.spot), detail: 'futures discount (no confirmation)' },
           { component: 'pcrDecomposition', strength: clamp01((0.8 - s.pcr) / 0.3), detail: `PCR extreme ${s.pcr.toFixed(2)}` },
           { component: 'wallBehavior', strength: 0.5, detail: `resistance ${resistance} holding` },
           { component: 'sessionFitness', strength: fit(FADE_FIT, r.sessionPhase), detail: `session ${r.sessionPhase}` }
@@ -241,7 +249,7 @@ export const basisFlowDivergenceReversal: Archetype = {
         thesis: 'Selloff into put writing, futures not confirming',
         evidence: [
           { component: 'writerFlow', strength: clamp01(a.netWriterFlow / 3), detail: 'put writing into weakness' },
-          { component: 'futuresParticipation', strength: clamp01(r.basis), detail: 'futures premium (no confirmation)' },
+          { component: 'futuresParticipation', strength: basisStrength(r.basis, s.spot), detail: 'futures premium (no confirmation)' },
           { component: 'pcrDecomposition', strength: clamp01((s.pcr - 1.4) / 0.3), detail: `PCR extreme ${s.pcr.toFixed(2)}` },
           { component: 'wallBehavior', strength: 0.5, detail: `support ${support} holding` },
           { component: 'sessionFitness', strength: fit(FADE_FIT, r.sessionPhase), detail: `session ${r.sessionPhase}` }

@@ -133,7 +133,14 @@ module.exports = {
       strengtheningScore: parseFloat(process.env.V2_STRENGTHENING_SCORE) || 55,
       readyScore: parseFloat(process.env.V2_READY_SCORE) || 65,
       triggerBufferPct: parseFloat(process.env.V2_TRIGGER_BUFFER_PCT) || 0.0008,
-      breakMinParticipation: parseFloat(process.env.V2_BREAK_MIN_PARTICIPATION) || 0.5
+      breakMinParticipation: parseFloat(process.env.V2_BREAK_MIN_PARTICIPATION) || 0.5,
+      // consecutive undetected/weak snapshots tolerated before invalidation
+      missTolerance: parseInt(process.env.V2_MISS_TOLERANCE) || 5,
+      // pre-trigger stop: fraction of spot beyond the stop + consecutive
+      // violating snapshots required (touch-kills were executing setups
+      // created inside their own detection tolerance)
+      stopBufferPct: parseFloat(process.env.V2_STOP_BUFFER_PCT) || 0.0005,
+      stopViolationTolerance: parseInt(process.env.V2_STOP_VIOLATION_TOL) || 2
     },
     // How long to keep shadowing a non-triggered setup to see if its target
     // or stop would have been hit (missed-setup tracking).

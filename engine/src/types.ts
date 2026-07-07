@@ -95,6 +95,7 @@ export interface PositioningAnalytics {
   netWriterFlow: number; // zvPE - zvCE; >0 bullish writer bias
   flowState: FlowState;
   priceDelta: number;
+  smoothedPriceDelta: number; // spot change over the last ~3 snapshots — flow/regime direction reads use this, not the single-snapshot delta
   easeOfMovement: number; // |price move| per future-volume unit; low = absorption
   ceWalls: Wall[];
   peWalls: Wall[];
