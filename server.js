@@ -490,7 +490,17 @@ class PTAServer {
             expiries.set(inst.symbol, { value: null, day: istDay() });
           } else {
             const list = await this.provider.getExpiryList(inst.securityId, inst.exchangeSegment);
-            expiries.set(inst.symbol, { value: list[0] || null, day: istDay() });
+            // Pick the first expiry that is TODAY or later — never list[0]
+            // blindly. The daily refresh fires at midnight IST, when Dhan's
+            // list can still carry the just-expired weekly contract in front;
+            // caching that blacked out NIFTY for a full session (811 errors).
+            const today = istDay();
+            const next = (list || [])
+              .map((e) => String(e).slice(0, 10))
+              .filter((e) => e >= today)
+              .sort()[0] || null;
+            expiries.set(inst.symbol, { value: next, day: today });
+            if (!next) console.warn(`Chain poll ${inst.symbol}: no usable expiry in ${JSON.stringify(list)}`);
             return; // expiry list call shares the chain rate limit; fetch chain next slot
           }
         }
@@ -517,6 +527,9 @@ class PTAServer {
         if (this.v2) await this.v2.onChain(chain);
       } catch (err) {
         const detail = err.response ? JSON.stringify(err.response.data) : err.message;
+        // Dhan rejected our expiry (code 811) — the cached date is wrong.
+        // Drop it so the next slot refetches instead of failing all day.
+        if (/expiry/i.test(detail)) expiries.delete(inst.symbol);
         console.error(`Chain poll ${inst.symbol}:`, detail);
       }
     }, 3500);

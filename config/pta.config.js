@@ -142,6 +142,9 @@ module.exports = {
       stopBufferPct: parseFloat(process.env.V2_STOP_BUFFER_PCT) || 0.0005,
       stopViolationTolerance: parseInt(process.env.V2_STOP_VIOLATION_TOL) || 2
     },
+    // Minimum live reward:risk (in premium terms, at trigger time) for a
+    // READY setup to become a signal. Below this it stays READY.
+    minTriggerRR: parseFloat(process.env.V2_MIN_TRIGGER_RR) || 1.8,
     // How long to keep shadowing a non-triggered setup to see if its target
     // or stop would have been hit (missed-setup tracking).
     shadowWindowMs: parseInt(process.env.V2_SHADOW_WINDOW_MS) || 90 * 60000

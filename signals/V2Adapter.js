@@ -35,21 +35,50 @@ class V2Adapter {
     this.lastDailyNote = new Map();   // instrument -> last logged daily-skip note (de-dupe)
     this.lifecycleOpts = (config && config.v2 && config.v2.lifecycle) || {};
     this.shadowWindowMs = (config && config.v2 && config.v2.shadowWindowMs) || 90 * 60000;
+    this.minTriggerRR = (config && config.v2 && config.v2.minTriggerRR) || 1.8;
+    this.chains = new Map();         // instrument -> latest chain (live premiums for the trigger guard)
   }
 
   engineFor(instrument) {
     let e = this.engines.get(instrument);
     if (!e) {
-      e = new this.engine.SetupEngine(instrument, this.lifecycleOpts);
+      e = new this.engine.SetupEngine(instrument, {
+        ...this.lifecycleOpts,
+        triggerGuard: (h) => this.allowTrigger(h)
+      });
       this.engines.set(instrument, e);
       this.futVol.set(instrument, new this.engine.RollingWindow(120));
     }
     return e;
   }
 
+  // Final pre-entry veto: recompute R:R from the LIVE premium against the
+  // pinned plan. A setup whose premium already ran past its target, or whose
+  // reward:risk collapsed below the floor, is not an actionable entry — it
+  // stays READY instead of becoming a signal. (The pin-time R:R was computed
+  // at FORMING and goes stale by trigger time; prod produced a 0.19 R:R
+  // "signal" this way.)
+  allowTrigger(h) {
+    try {
+      const chain = this.chains.get(h.instrument);
+      const pin = this.pinnedStrikes.get(h.id);
+      if (!chain || !pin || !(pin.targetPremium > 0)) return true; // can't validate — don't block on data gaps
+      const leg = this.findLeg(chain, pin.strike, h.direction);
+      const prem = leg ? Number(leg.ltp) || 0 : 0;
+      if (!(prem > 0)) return true;
+      const reward = pin.targetPremium - prem;
+      const risk = prem - pin.stopPremium;
+      if (reward <= 0 || risk <= 0) return false; // premium already past target or below stop
+      return reward / risk >= this.minTriggerRR;
+    } catch {
+      return true;
+    }
+  }
+
   async onChain(chain) {
     try {
       if (!chain || !Array.isArray(chain.strikes) || chain.strikes.length === 0) return;
+      this.chains.set(chain.instrument, chain);
 
       const state = await this.readState(chain.instrument);
       const futVolumeDelta = Number(chain.futVolume) || 0;
@@ -82,6 +111,15 @@ class V2Adapter {
       }
 
       for (const t of result.transitions) {
+        // Hand the engine the pinned (confluence-resolved) exit levels the
+        // moment a trade opens, so it manages the position against the SAME
+        // levels the UI displays — not the raw wall-derived ones.
+        if (t.to === 'TRIGGERED') {
+          const pin = this.pinnedStrikes.get(t.id);
+          if (pin && pin.stopUnderlying > 0 && pin.targetUnderlying > 0) {
+            this.engineFor(t.instrument).setTradePlan(t.id, pin.stopUnderlying, pin.targetUnderlying);
+          }
+        }
         await this.persistTransition(t, chain, state.atr);
         if (NOTABLE.has(t.to)) {
           this.broadcast({ type: 'v2:transition', instrument: t.instrument, data: t });

@@ -81,6 +81,10 @@ export interface LifecycleOptions {
   readyTimeoutMs?: number;     // READY decays back if no trigger
   stopBufferPct?: number;      // pre-trigger stop must be exceeded by this fraction of spot
   stopViolationTolerance?: number; // consecutive violating snapshots before invalidation
+  // Final veto before a READY setup triggers — the host can reject entries
+  // whose live trade plan no longer makes sense (e.g. R:R collapsed because
+  // the premium already ran). Returning false leaves the setup READY.
+  triggerGuard?: (h: Hypothesis) => boolean;
 }
 
 const BREAK_ARCHETYPES: ArchetypeName[] = ['WALL_CAPITULATION_BREAK'];
@@ -91,12 +95,14 @@ export class SetupEngine {
   private registry: Archetype[];
   private active = new Map<string, Hypothesis>();
   private lastTs = 0;
-  private o: Required<Omit<LifecycleOptions, 'tracker' | 'regime' | 'registry'>>;
+  private triggerGuard?: (h: Hypothesis) => boolean;
+  private o: Required<Omit<LifecycleOptions, 'tracker' | 'regime' | 'registry' | 'triggerGuard'>>;
 
   constructor(private instrument: string, opts: LifecycleOptions = {}) {
     this.tracker = new PositioningTracker(opts.tracker);
     this.regimeClf = new RegimeClassifier(opts.regime);
     this.registry = opts.registry ?? ALL_ARCHETYPES;
+    this.triggerGuard = opts.triggerGuard;
     this.o = {
       formingScore: opts.formingScore ?? 35,
       strengtheningScore: opts.strengtheningScore ?? 55,
@@ -160,9 +166,30 @@ export class SetupEngine {
     return { analytics, regime, hypotheses: [...this.active.values()], transitions };
   }
 
+  // Install the resolved (confluence/pinned) exit levels on an OPEN trade so
+  // the engine manages the position against the same levels the user sees.
+  // Called by the host right after a TRIGGERED transition; levels are frozen
+  // from then on (applyUpdate no longer overwrites open trades).
+  setTradePlan(id: string, stopUnderlying: number, targetUnderlying: number): void {
+    for (const h of this.active.values()) {
+      if (h.id !== id) continue;
+      if (h.stage !== 'TRIGGERED' && h.stage !== 'ACTIVE') return;
+      if (Number.isFinite(stopUnderlying) && stopUnderlying > 0) h.structuralStop = stopUnderlying;
+      if (Number.isFinite(targetUnderlying) && targetUnderlying > 0) h.structuralTarget = targetUnderlying;
+      return;
+    }
+  }
+
   // --- internals ---
   private key(a: ArchetypeName, d: Side): string {
     return `${a}|${d}`;
+  }
+
+  private hasOpenPosition(direction: Side): boolean {
+    for (const h of this.active.values()) {
+      if ((h.stage === 'TRIGGERED' || h.stage === 'ACTIVE') && h.direction === direction) return true;
+    }
+    return false;
   }
 
   private scoreWith(sig: ArchetypeSignal, holds: number): { score: number; reasons: string[]; evidence: Evidence[] } {
@@ -213,9 +240,16 @@ export class SetupEngine {
     h.score = scored.score;
     h.reasons = scored.reasons;
     h.evidence = scored.evidence;
-    h.structuralStop = sig.structuralStop;
-    h.structuralTarget = sig.structuralTarget;
-    h.entryRef = sig.entryRef;
+    // The trade plan is FROZEN once the setup triggers. Re-deriving stop/
+    // target/entry from each fresh detection moved the goalposts on open
+    // trades — as price approached the target, walls re-derived and the
+    // target ratcheted away, so winners never closed and outcome accounting
+    // drifted with the entry reference.
+    if (h.stage !== 'TRIGGERED' && h.stage !== 'ACTIVE') {
+      h.structuralStop = sig.structuralStop;
+      h.structuralTarget = sig.structuralTarget;
+      h.entryRef = sig.entryRef;
+    }
     h.scoreHistory.push(scored.score);
     if (h.scoreHistory.length > 6) h.scoreHistory.shift();
 
@@ -238,7 +272,15 @@ export class SetupEngine {
         h.stage = 'STRENGTHENING';
         return;
       }
-      if (this.triggerMet(h, snap, futParticipation)) {
+      // One open position per direction: a second archetype reaching the same
+      // conclusion is confirmation, not a second trade — presenting both as
+      // signals doubles the position. The runner-up stays READY and may
+      // trigger later if the open trade closes first.
+      if (
+        !this.hasOpenPosition(h.direction) &&
+        this.triggerMet(h, snap, futParticipation) &&
+        (!this.triggerGuard || this.triggerGuard(h))
+      ) {
         h.stage = 'TRIGGERED';
         h.triggeredAt = snap.ts;
       }
