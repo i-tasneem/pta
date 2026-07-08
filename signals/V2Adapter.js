@@ -37,6 +37,7 @@ class V2Adapter {
     this.shadowWindowMs = (config && config.v2 && config.v2.shadowWindowMs) || 90 * 60000;
     this.minTriggerRR = (config && config.v2 && config.v2.minTriggerRR) || 1.8;
     this.chains = new Map();         // instrument -> latest chain (live premiums for the trigger guard)
+    this.rrBlockLogged = new Set();  // hypothesis ids whose R:R block was already logged
   }
 
   engineFor(instrument) {
@@ -68,8 +69,13 @@ class V2Adapter {
       if (!(prem > 0)) return true;
       const reward = pin.targetPremium - prem;
       const risk = prem - pin.stopPremium;
-      if (reward <= 0 || risk <= 0) return false; // premium already past target or below stop
-      return reward / risk >= this.minTriggerRR;
+      const ok = reward > 0 && risk > 0 && reward / risk >= this.minTriggerRR;
+      if (!ok && !this.rrBlockLogged.has(h.id)) {
+        this.rrBlockLogged.add(h.id);
+        const rr = risk > 0 ? (reward / risk).toFixed(2) : 'n/a';
+        console.warn(`V2 trigger blocked ${h.id}: live premium ${prem} vs pin entry ${pin.entryPremium} target ${pin.targetPremium} stop ${pin.stopPremium} (rr ${rr} < ${this.minTriggerRR})`);
+      }
+      return ok;
     } catch {
       return true;
     }
@@ -110,7 +116,19 @@ class V2Adapter {
         });
       }
 
+      const byId = new Map(result.hypotheses.map((h) => [h.id, h]));
       for (const t of result.transitions) {
+        // Re-pin the trade plan at DECISION time. A plan pinned at FORMING
+        // goes stale during fast moves — in a 1200-pt SENSEX fall the live
+        // premium blew past the FORMING-time target, so the R:R gate vetoed
+        // the trigger forever and the setup sat READY while the move ran.
+        // Fresh strike/premiums/exits at READY; frozen from TRIGGERED on.
+        if (t.to === 'READY') {
+          this.pinnedStrikes.delete(t.id);
+          this.rrBlockLogged.delete(t.id);
+          const h = byId.get(t.id);
+          if (h) this.ensurePin(h, chain, state.atr, levels);
+        }
         // Hand the engine the pinned (confluence-resolved) exit levels the
         // moment a trade opens, so it manages the position against the SAME
         // levels the UI displays — not the raw wall-derived ones.
@@ -152,6 +170,7 @@ class V2Adapter {
         const sh = this.shadows.get(t.id);
         this.shadows.delete(t.id);
         this.pinnedStrikes.delete(t.id); // release the pinned strike
+        this.rrBlockLogged.delete(t.id);
         // Only setups that NEVER triggered are "missed" — start watching outcome
         if (sh && !sh.everTriggered && (t.to === 'INVALIDATED' || t.to === 'EXPIRED') && sh.target > 0 && sh.stop > 0) {
           this.pendingOutcomes.push({ ...sh, deadlineTs: (Number(chain.timestamp) || Date.now()) + this.shadowWindowMs, terminalReason: t.to });
