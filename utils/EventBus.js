@@ -21,7 +21,9 @@ class EventBus {
     if (this.publisher) await this.publisher.disconnect();
   }
 
-  // Publish event to stream
+  // Publish event to stream. Approximate MAXLEN trim on every add — without
+  // it the events stream grew unbounded (21M entries in prod, feeding both
+  // the OOM pressure and multi-week consumer-group backlogs).
   async publish(eventType, instrument, data) {
     const streamKey = `${this.keyPrefix}:market:events`;
     return await this.client.xAdd(streamKey, '*', {
@@ -29,16 +31,28 @@ class EventBus {
       instrument: instrument || '',
       data: JSON.stringify(data),
       timestamp: Date.now().toString()
+    }, {
+      TRIM: { strategy: 'MAXLEN', strategyModifier: '~', threshold: 10000 }
     });
   }
 
-  // Create consumer group
+  // Create consumer group. Every consumer of market:events is a REAL-TIME
+  // module (scanners, ranking, notifications, dashboard) — none of them wants
+  // history. The group position persists in Redis across restarts, so a
+  // consumer that fell behind resumes deep in the past and replays stale
+  // events into live state (prod: the scanner group was 13.7M events behind,
+  // mixing two-week-old ticks into today's candles). Reset to NOW on boot.
   async createConsumerGroup(groupName, startId = '$') {
     const streamKey = `${this.keyPrefix}:market:events`;
     try {
       await this.client.xGroupCreate(streamKey, groupName, startId, { MKSTREAM: true });
     } catch (err) {
       if (!err.message.includes('already exists')) throw err;
+    }
+    try {
+      await this.client.xGroupSetId(streamKey, groupName, '$');
+    } catch (err) {
+      console.warn(`consumer group ${groupName}: could not reset to $:`, err.message);
     }
   }
 

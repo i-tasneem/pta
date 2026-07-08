@@ -76,9 +76,10 @@ class ScannerOrchestrator {
     if (!scanners) return;
 
     switch (type) {
-      case 'tick:update':
-        await scanners.tick.onTick(data);
-        break;
+      // NOTE: tick:update and oi:update are handled by the DIRECT provider
+      // path (onTickFromProvider / onOptionChainFromProvider) — consuming
+      // them here as well processed every tick twice, and when this consumer
+      // fell behind it replayed stale ticks into the live candle state.
       case 'candle:close:1m':
         await scanners.candle.onCandleClose('1m', data);
         break;
@@ -91,9 +92,6 @@ class ScannerOrchestrator {
       case 'indicator:update':
         await scanners.trend.onIndicatorUpdate(data);
         await scanners.momentum.onIndicatorUpdate(data);
-        break;
-      case 'oi:update':
-        await scanners.oi.onOIUpdate(data);
         break;
     }
   }
