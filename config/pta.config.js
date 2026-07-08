@@ -9,29 +9,56 @@ module.exports = {
     wsUrl: 'wss://api-feed.dhan.co',
     restUrl: 'https://api.dhan.co',
     rateLimit: 25,
-    tokenRefreshInterval: 20 * 60 * 60 * 1000
+    tokenRefreshInterval: 20 * 60 * 60 * 1000,
+    // Chain-poll budget (requests/sec) fed to ChainScheduler. Dhan's documented
+    // limits: Data-API bucket 5 req/s, plus 1 request per UNIQUE underlying
+    // per 3s. Default stays at the old global-serial rate until the burst
+    // probe (scripts/probe-chain-limit.js) validates the docs on this account;
+    // raise via env afterwards — no redeploy needed.
+    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 1 / 3.5,
+    chainMinUniqueGapMs: parseInt(process.env.CHAIN_MIN_UNIQUE_GAP_MS) || 3000
   },
 
   instruments: {
-    // Dhan numeric security IDs (api-scrip-master), segment IDX_I for indices
-    indices: [
-      { symbol: 'NIFTY', securityId: '13', exchangeSegment: 'IDX_I' },
-      { symbol: 'BANKNIFTY', securityId: '25', exchangeSegment: 'IDX_I' },
-      { symbol: 'FINNIFTY', securityId: '27', exchangeSegment: 'IDX_I' },
-      { symbol: 'MIDCPNIFTY', securityId: '442', exchangeSegment: 'IDX_I' },
-      { symbol: 'SENSEX', securityId: '51', exchangeSegment: 'IDX_I' },
-      { symbol: 'BANKEX', securityId: '69', exchangeSegment: 'IDX_I' }
+    // One entry per chain-polled underlying. class: INDEX | STOCK | MCX.
+    // calendar picks the exchange clock (scanner/MarketCalendar.js + engine
+    // session phases). cadenceMs is the chain-poll target the scheduler aims
+    // for. STOCK/MCX entries ship DISABLED: they activate in Phase 1/2 after
+    // the probe verifies underlying-segment semantics and the resolver fills
+    // securityIds (stocks: NSE_EQ equity id; MCX: front-month FUTURES id,
+    // which rolls monthly — never hardcode it).
+    universe: [
+      // Dhan numeric security IDs (api-scrip-master), segment IDX_I for indices
+      { symbol: 'NIFTY', class: 'INDEX', securityId: '13', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
+      { symbol: 'BANKNIFTY', class: 'INDEX', securityId: '25', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
+      { symbol: 'FINNIFTY', class: 'INDEX', securityId: '27', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
+      { symbol: 'MIDCPNIFTY', class: 'INDEX', securityId: '442', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
+      { symbol: 'SENSEX', class: 'INDEX', securityId: '51', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
+      { symbol: 'BANKEX', class: 'INDEX', securityId: '69', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
+
+      // Phase 1 seed (12 by option liquidity; the nightly universe job
+      // replaces this with a data-driven ranking — do not curate by hand).
+      ...['RELIANCE', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'AXISBANK', 'BAJFINANCE',
+          'TATAMOTORS', 'TATASTEEL', 'INFY', 'ADANIENT', 'TCS', 'LT']
+        .map((symbol) => ({
+          symbol, class: 'STOCK', securityId: null, exchangeSegment: 'NSE_EQ',
+          calendar: 'NSE', cadenceMs: 30000, enabled: false
+        })),
+
+      // Phase 2. Underlyings are futures contracts (securityId resolved at
+      // runtime and rolled monthly). NG signals derive from the liquid full
+      // NATURALGAS chain; NATGASMINI (lot 250 mmBtu) is the execution
+      // contract shown on cards. CRUDEOIL options are both signal and
+      // execution (lot 100 bbl).
+      { symbol: 'CRUDEOIL', class: 'MCX', securityId: null, exchangeSegment: 'MCX_COMM', calendar: 'MCX', cadenceMs: 20000, enabled: false, lotSize: 100 },
+      { symbol: 'NATURALGAS', class: 'MCX', securityId: null, exchangeSegment: 'MCX_COMM', calendar: 'MCX', cadenceMs: 20000, enabled: false, execContract: 'NATGASMINI', execLotSize: 250 }
     ],
-    stocks: [
-      'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'AXISBANK', 'KOTAKBANK',
-      'BAJFINANCE', 'BAJAJFINSV', 'HDFC', 'LT', 'ITC', 'HINDUNILVR', 'SBILIFE',
-      'MARUTI', 'TATAMOTORS', 'TATASTEEL', 'SUNPHARMA', 'CIPLA', 'DRREDDY',
-      'ADANIENT', 'ADANIPORTS', 'POWERGRID', 'NTPC', 'ONGC', 'COALINDIA',
-      'JSWSTEEL', 'GRASIM', 'ULTRACEMCO', 'SHREECEM', 'AMBUJACEM', 'ACC',
-      'WIPRO', 'HCLTECH', 'TECHM', 'M&M', 'EICHERMOT', 'HEROMOTOCO',
-      'BPCL', 'IOC', 'HINDPETRO', 'GAIL', 'TATAPOWER', 'NHPC',
-      'DLF', 'GODREJPROP', 'OBEROIRLTY', 'BRITANNIA', 'NESTLEIND', 'DABUR'
-    ]
+
+    // Back-compat view: everything that consumed instruments.indices keeps
+    // working (scanners, gateway, futures pairing).
+    get indices() {
+      return this.universe.filter((u) => u.class === 'INDEX');
+    }
   },
 
   scanners: {

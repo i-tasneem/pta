@@ -41,14 +41,22 @@ const tol = (spot: number) => spot * 0.0015;
 const fallbackMove = (spot: number) => spot * 0.004;
 const fit = (map: Record<SessionPhase, number>, p: SessionPhase) => map[p] ?? 0;
 
+// EU/US_PRIME/LATE are MCX-only phases (see structure/session.ts): breaks and
+// trends want the Europe/US windows where real flow arrives; fades want the
+// thin Indian midday MCX writers love to pin; expiry pin peaks into the late
+// devolvement hours. NSE instruments never emit these phases.
 const BREAK_FIT: Record<SessionPhase, number> =
-  { PRE: 0, OPEN: 0.3, MORNING: 1, MIDDAY: 0.7, AFTERNOON: 0.5, CLOSE: 0.2, POST: 0 };
+  { PRE: 0, OPEN: 0.3, MORNING: 1, MIDDAY: 0.7, AFTERNOON: 0.5, CLOSE: 0.2, POST: 0,
+    EU: 0.8, US_PRIME: 1, LATE: 0.6 };
 const FADE_FIT: Record<SessionPhase, number> =
-  { PRE: 0, OPEN: 0.2, MORNING: 0.6, MIDDAY: 1, AFTERNOON: 0.7, CLOSE: 0.3, POST: 0 };
+  { PRE: 0, OPEN: 0.2, MORNING: 0.6, MIDDAY: 1, AFTERNOON: 0.7, CLOSE: 0.3, POST: 0,
+    EU: 0.6, US_PRIME: 0.4, LATE: 0.5 };
 const TREND_FIT: Record<SessionPhase, number> =
-  { PRE: 0, OPEN: 0.3, MORNING: 1, MIDDAY: 0.8, AFTERNOON: 0.6, CLOSE: 0.3, POST: 0 };
+  { PRE: 0, OPEN: 0.3, MORNING: 1, MIDDAY: 0.8, AFTERNOON: 0.6, CLOSE: 0.3, POST: 0,
+    EU: 0.8, US_PRIME: 1, LATE: 0.6 };
 const EXPIRY_FIT: Record<SessionPhase, number> =
-  { PRE: 0, OPEN: 0, MORNING: 0, MIDDAY: 0.5, AFTERNOON: 1, CLOSE: 0.8, POST: 0 };
+  { PRE: 0, OPEN: 0, MORNING: 0, MIDDAY: 0.5, AFTERNOON: 1, CLOSE: 0.8, POST: 0,
+    EU: 0.3, US_PRIME: 0.8, LATE: 1 };
 
 function fut(ctx: ArchetypeContext): number {
   return clamp01(ctx.futParticipation ?? 0);

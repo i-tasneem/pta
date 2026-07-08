@@ -50,7 +50,12 @@ export interface Wall {
   side: Side;
 }
 
-export type SessionPhase = 'PRE' | 'OPEN' | 'MORNING' | 'MIDDAY' | 'AFTERNOON' | 'CLOSE' | 'POST';
+// PRE..POST are the NSE day-session phases. EU/US_PRIME/LATE exist only on
+// the MCX energy calendar (09:00–23:30 IST), where the liquidity clock is
+// driven by Europe/US hours — NSE instruments never emit them.
+export type SessionPhase =
+  | 'PRE' | 'OPEN' | 'MORNING' | 'MIDDAY' | 'AFTERNOON' | 'CLOSE' | 'POST'
+  | 'EU' | 'US_PRIME' | 'LATE';
 
 export type Regime =
   | 'TREND_BULL'

@@ -29,6 +29,7 @@ const Auth = require('./utils/Auth');
 const ChainArchiver = require('./archive/ChainArchiver');
 const V2Adapter = require('./signals/V2Adapter');
 const GateTelemetry = require('./signals/GateTelemetry');
+const ChainScheduler = require('./scanner/ChainScheduler');
 const config = require('./config/pta.config');
 
 // Compiled TypeScript V2 engine (engine/dist). Guarded so a missing build
@@ -239,8 +240,8 @@ class PTAServer {
     // boot instead of hours into the session
     await this.bootstrapHistory(instruments);
 
-    // Poll option chains round-robin (Dhan limit: 1 chain request / 3s)
-    this.startChainPolling(instruments);
+    // Poll option chains via the budgeted, session-aware scheduler
+    this.startChainPolling();
 
     // Regime + MTF + opportunity scoring; publishes opportunity:score,
     // which is what wakes the entry-trigger gates and the ranking engine
@@ -255,7 +256,7 @@ class PTAServer {
     await this.archiver.start();
 
     // Start HTTP + WS gateway
-    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver, this.v2, this.db, this.auth, this.gateTelemetry);
+    const expressGateway = new ExpressGateway(this.eventBus, this.schema, this.presentation, this.ranking, config, this.archiver, this.v2, this.db, this.auth, this.gateTelemetry, this.chainScheduler);
     const port = process.env.PORT || 3000;
     const server = expressGateway.listen(port);
 
@@ -470,74 +471,95 @@ class PTAServer {
     }, 60000);
   }
 
-  startChainPolling(instruments) {
-    const expiries = new Map(); // symbol -> { value, day } — refetched daily
+  startChainPolling() {
+    this.chainExpiries = new Map(); // symbol -> { value, day } — refetched daily
+
+    // Priority scheduler instead of the old fixed 3.5s round-robin. Each
+    // instrument declares its own cadence and exchange calendar; closed
+    // exchanges cost nothing (no more weekend polls archiving frozen chains)
+    // and after NSE close the whole budget serves MCX. Budget stays at the
+    // old serial rate until the burst probe validates Dhan's documented
+    // per-unique limit (see config.provider.chainBudgetRps).
+    this.chainScheduler = new ChainScheduler({
+      budgetRps: config.provider.chainBudgetRps,
+      minUniqueGapMs: config.provider.chainMinUniqueGapMs
+    });
+
+    const pollable = config.instruments.universe.filter((u) => u.enabled && u.securityId);
+    for (const inst of pollable) {
+      this.chainScheduler.add({
+        symbol: inst.symbol,
+        calendar: inst.calendar || 'NSE',
+        cadenceMs: inst.cadenceMs || 21000,
+        securityId: inst.securityId,
+        exchangeSegment: inst.exchangeSegment
+      });
+    }
+    this.chainScheduler.start((inst) => this.pollChainOnce(inst));
+    console.log(`✓ Chain scheduler: ${pollable.length} instruments, budget ${config.provider.chainBudgetRps.toFixed(3)} req/s`);
+  }
+
+  async pollChainOnce(inst) {
     const istDay = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
-    let i = 0;
 
-    this.chainTimer = setInterval(async () => {
-      const inst = instruments[i % instruments.length];
-      i++;
-
-      try {
-        // Refresh the nearest expiry each IST day. Caching it forever meant
-        // that after a weekly expiry passed, the poll kept requesting a dead
-        // contract, got empty data, and the instrument silently went dark
-        // until the next process restart.
-        const cached = expiries.get(inst.symbol);
-        if (!cached || cached.day !== istDay()) {
-          if (typeof this.provider.getExpiryList !== 'function') {
-            expiries.set(inst.symbol, { value: null, day: istDay() });
-          } else {
-            const list = await this.provider.getExpiryList(inst.securityId, inst.exchangeSegment);
-            // Pick the first expiry that is TODAY or later — never list[0]
-            // blindly. The daily refresh fires at midnight IST, when Dhan's
-            // list can still carry the just-expired weekly contract in front;
-            // caching that blacked out NIFTY for a full session (811 errors).
-            const today = istDay();
-            const next = (list || [])
-              .map((e) => String(e).slice(0, 10))
-              .filter((e) => e >= today)
-              .sort()[0] || null;
-            expiries.set(inst.symbol, { value: next, day: today });
-            if (!next) console.warn(`Chain poll ${inst.symbol}: no usable expiry in ${JSON.stringify(list)}`);
-            return; // expiry list call shares the chain rate limit; fetch chain next slot
-          }
+    try {
+      // Refresh the nearest expiry each IST day. Caching it forever meant
+      // that after a weekly expiry passed, the poll kept requesting a dead
+      // contract, got empty data, and the instrument silently went dark
+      // until the next process restart.
+      const cached = this.chainExpiries.get(inst.symbol);
+      if (!cached || cached.day !== istDay()) {
+        if (typeof this.provider.getExpiryList !== 'function') {
+          this.chainExpiries.set(inst.symbol, { value: null, day: istDay() });
+        } else {
+          const list = await this.provider.getExpiryList(inst.securityId, inst.exchangeSegment);
+          // Pick the first expiry that is TODAY or later — never list[0]
+          // blindly. The daily refresh fires at midnight IST, when Dhan's
+          // list can still carry the just-expired weekly contract in front;
+          // caching that blacked out NIFTY for a full session (811 errors).
+          const today = istDay();
+          const next = (list || [])
+            .map((e) => String(e).slice(0, 10))
+            .filter((e) => e >= today)
+            .sort()[0] || null;
+          this.chainExpiries.set(inst.symbol, { value: next, day: today });
+          if (!next) console.warn(`Chain poll ${inst.symbol}: no usable expiry in ${JSON.stringify(list)}`);
+          return; // expiry list call shares the chain rate limit; fetch chain next slot
         }
-
-        const raw = await this.provider.getOptionChain(
-          inst.securityId,
-          inst.exchangeSegment,
-          expiries.get(inst.symbol).value
-        );
-
-        if (!raw || !raw.data || raw.data.length === 0) return;
-
-        const chain = this.normalizer.normalizeOptionChain(raw, inst.symbol);
-
-        // Futures flow over the full interval since the last chain poll for
-        // this symbol, plus the future's LTP for basis (fut - spot).
-        chain.futVolume = this.futVolAccum?.get(inst.symbol) || 0;
-        this.futVolAccum?.set(inst.symbol, 0);
-        chain.fut = this.futLtpLatest?.get(inst.symbol) || 0;
-
-        await this.normalizer.writeOptionChain(chain);
-        await this.scanners.onOptionChainFromProvider(chain);
-        await this.chainArchiver.record(chain);
-        if (this.v2) await this.v2.onChain(chain);
-      } catch (err) {
-        const detail = err.response ? JSON.stringify(err.response.data) : err.message;
-        // Dhan rejected our expiry (code 811) — the cached date is wrong.
-        // Drop it so the next slot refetches instead of failing all day.
-        if (/expiry/i.test(detail)) expiries.delete(inst.symbol);
-        console.error(`Chain poll ${inst.symbol}:`, detail);
       }
-    }, 3500);
+
+      const raw = await this.provider.getOptionChain(
+        inst.securityId,
+        inst.exchangeSegment,
+        this.chainExpiries.get(inst.symbol).value
+      );
+
+      if (!raw || !raw.data || raw.data.length === 0) return;
+
+      const chain = this.normalizer.normalizeOptionChain(raw, inst.symbol);
+
+      // Futures flow over the full interval since the last chain poll for
+      // this symbol, plus the future's LTP for basis (fut - spot).
+      chain.futVolume = this.futVolAccum?.get(inst.symbol) || 0;
+      this.futVolAccum?.set(inst.symbol, 0);
+      chain.fut = this.futLtpLatest?.get(inst.symbol) || 0;
+
+      await this.normalizer.writeOptionChain(chain);
+      await this.scanners.onOptionChainFromProvider(chain);
+      await this.chainArchiver.record(chain);
+      if (this.v2) await this.v2.onChain(chain);
+    } catch (err) {
+      const detail = err.response ? JSON.stringify(err.response.data) : err.message;
+      // Dhan rejected our expiry (code 811) — the cached date is wrong.
+      // Drop it so the next slot refetches instead of failing all day.
+      if (/expiry/i.test(detail)) this.chainExpiries.delete(inst.symbol);
+      console.error(`Chain poll ${inst.symbol}:`, detail);
+    }
   }
 
   async stop() {
     console.log('Shutting down PTA Server...');
-    if (this.chainTimer) clearInterval(this.chainTimer);
+    this.chainScheduler?.stop();
     if (this.providerRetryTimer) clearInterval(this.providerRetryTimer);
     if (this.futuresRetryTimer) clearInterval(this.futuresRetryTimer);
     if (this.analysisTimer) clearInterval(this.analysisTimer);

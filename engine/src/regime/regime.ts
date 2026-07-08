@@ -11,7 +11,7 @@ import {
   ArchetypeName
 } from '../types';
 import { corridor, atmIV, basis } from '../structure/structure';
-import { sessionPhase, istDate } from '../structure/session';
+import { sessionPhase, istDate, CalendarId } from '../structure/session';
 
 export interface RegimeOptions {
   windowCapacity?: number;
@@ -21,6 +21,7 @@ export interface RegimeOptions {
   ivStdFloorPct?: number;  // min IV std as fraction of mean IV (variance floor)
   spikePersistence?: number;   // consecutive spike snapshots before EVENT_CHAOS
   regimePersistence?: number;  // consecutive snapshots before a regime switch
+  calendar?: CalendarId;   // which exchange clock the instrument trades on
 }
 
 const ALLOW: Record<Regime, ArchetypeName[]> = {
@@ -41,6 +42,11 @@ const ALLOW: Record<Regime, ArchetypeName[]> = {
 // logically impossible — zero detections in 12 prod sessions.
 const CORRIDOR_STATES = ['CORRIDOR', 'CAPPED_FADE', 'PUT_KNIFE'];
 
+// Phases in which an expiry day exerts pin gravity. AFTERNOON/CLOSE are the
+// NSE expiry hours; US_PRIME/LATE are their MCX equivalents (devolvement
+// approaches through the US evening) — NSE never emits the latter two.
+const EXPIRY_GRAVITY_PHASES = ['AFTERNOON', 'CLOSE', 'US_PRIME', 'LATE'];
+
 export class RegimeClassifier {
   private ivWin: RollingWindow;
   private widthWin: RollingWindow;
@@ -56,9 +62,11 @@ export class RegimeClassifier {
   private stableRegime: Regime = 'UNCLEAR';
   private candidateRegime: Regime = 'UNCLEAR';
   private candidateStreak = 0;
+  private calendar: CalendarId;
 
   constructor(opts: RegimeOptions = {}) {
     const cap = opts.windowCapacity ?? 60;
+    this.calendar = opts.calendar ?? 'NSE';
     this.ivWin = new RollingWindow(cap);
     this.widthWin = new RollingWindow(cap);
     this.ivSpikeZ = opts.ivSpikeZ ?? 2.5;
@@ -73,7 +81,7 @@ export class RegimeClassifier {
     const corr = corridor(a, snap.spot);
     const iv = atmIV(snap);
     const b = basis(snap);
-    const phase = sessionPhase(snap.ts);
+    const phase = sessionPhase(snap.ts, this.calendar);
     const expiry = !!snap.expiry && istDate(snap.ts) === snap.expiry;
 
     // Spike via z-score OR relative jump. The z uses a variance FLOOR: Dhan's
@@ -153,7 +161,7 @@ export class RegimeClassifier {
   ): Regime {
     // Precedence matters: chaos and expiry override everything.
     if (ctx.ivSpike) return 'EVENT_CHAOS';
-    if (ctx.expiry && (ctx.phase === 'AFTERNOON' || ctx.phase === 'CLOSE')) return 'EXPIRY_GRAVITY';
+    if (ctx.expiry && EXPIRY_GRAVITY_PHASES.includes(ctx.phase)) return 'EXPIRY_GRAVITY';
 
     if (!a.ready) return 'UNCLEAR';
 

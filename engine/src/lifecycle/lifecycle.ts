@@ -76,6 +76,7 @@ export interface LifecycleOptions {
   triggerBufferPct?: number;   // favorable move from readyPrice to trigger
   breakMinParticipation?: number;
   missTolerance?: number;      // snapshots without detection before invalidation
+  cadenceMs?: number;          // expected chain-poll interval; staleness scales off it
   staleMs?: number;            // snapshot gap that invalidates everything
   maxAgeMs?: number;           // unreached-READY hypotheses expire
   readyTimeoutMs?: number;     // READY decays back if no trigger
@@ -112,7 +113,11 @@ export class SetupEngine {
       // 2 was lethal at ~20s polling: any 3 flat snapshots (regime flap) killed
       // the setup — prod median lifetime was ~60s with a 100% invalidation rate.
       missTolerance: opts.missTolerance ?? 5,
-      staleMs: opts.staleMs ?? 90000,
+      cadenceMs: opts.cadenceMs ?? 21000,
+      // Staleness must scale with the poll cadence: a fixed 90s would kill
+      // every slow-tier instrument (e.g. stocks at 60-90s polls) after two
+      // perfectly normal gaps. 4 missed intervals ≈ genuinely frozen feed.
+      staleMs: opts.staleMs ?? Math.max(90000, 4 * (opts.cadenceMs ?? 21000)),
       maxAgeMs: opts.maxAgeMs ?? 45 * 60000,
       readyTimeoutMs: opts.readyTimeoutMs ?? 15 * 60000,
       stopBufferPct: opts.stopBufferPct ?? 0.0005,

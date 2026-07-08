@@ -13,7 +13,8 @@ class ExpressGateway {
     v2,
     db,
     auth,
-    gateTelemetry
+    gateTelemetry,
+    chainScheduler
   ) {
     this.app = express();
     this.eventBus = eventBus;
@@ -26,6 +27,7 @@ class ExpressGateway {
     this.db = db;
     this.auth = auth;
     this.gateTelemetry = gateTelemetry;
+    this.chainScheduler = chainScheduler;
   }
 
   setupRoutes() {
@@ -94,7 +96,10 @@ class ExpressGateway {
         ...health,
         futuresResolved,
         streams,
-        ticks
+        ticks,
+        // Per-symbol chain-poll age vs cadence target — the regression gate
+        // for the scheduler migration (ages must be <= what round-robin gave)
+        chains: this.chainScheduler ? this.chainScheduler.state() : null
       });
     });
 
