@@ -671,6 +671,70 @@ class DhanProvider extends MarketDataProvider {
     return Object.fromEntries(out);
   }
 
+  // Streams the detailed scrip master and resolves the front TWO monthly
+  // futures per commodity symbol (MCX FUTCOM). The chain API's underlying
+  // for commodity options is the FUTURES securityId, which rolls monthly —
+  // `next` lets the poller advance when the front option series expires.
+  async findCommodityFutures(symbols) {
+    const url = 'https://images.dhan.co/api-data/api-scrip-master-detailed.csv';
+    const response = await axios.get(url, { responseType: 'stream' });
+    const rl = readline.createInterface({ input: response.data, crlfDelay: Infinity });
+
+    let streamError = null;
+    response.data.on('error', (err) => { streamError = err; rl.close(); });
+
+    const wanted = new Set(symbols);
+    const today = new Date().toISOString().slice(0, 10);
+    const bySymbol = new Map(); // symbol -> [{securityId, expiry, lotSize}] sorted
+    let cols = null;
+    let lineCount = 0;
+
+    for await (const line of rl) {
+      lineCount++;
+      const values = line.split(',');
+
+      if (!cols) {
+        cols = {};
+        values.forEach((h, i) => { cols[h.trim()] = i; });
+        continue;
+      }
+
+      const get = (name) => {
+        const i = cols[name];
+        return i == null ? '' : (values[i] || '').trim();
+      };
+
+      if (get('INSTRUMENT') !== 'FUTCOM') continue;
+      const underlying = get('UNDERLYING_SYMBOL');
+      if (!wanted.has(underlying)) continue;
+
+      const expiry = get('SM_EXPIRY_DATE').slice(0, 10);
+      if (!expiry || expiry < today) continue;
+
+      const list = bySymbol.get(underlying) || [];
+      list.push({
+        securityId: get('SECURITY_ID'),
+        expiry,
+        lotSize: parseFloat(get('LOT_SIZE')) || 0
+      });
+      bySymbol.set(underlying, list);
+    }
+
+    if (streamError) {
+      throw new Error(`scrip master stream failed after ${lineCount} lines: ${streamError.message}`);
+    }
+    if (bySymbol.size === 0) {
+      throw new Error(`scrip master parsed ${lineCount} lines but resolved 0 commodities (truncated download?)`);
+    }
+
+    const out = {};
+    for (const [sym, list] of bySymbol) {
+      list.sort((a, b) => a.expiry.localeCompare(b.expiry));
+      out[sym] = { front: list[0], next: list[1] || null };
+    }
+    return out;
+  }
+
   async getInstrumentMaster() {
     const url = 'https://images.dhan.co/api-data/api-scrip-master.csv';
     const response = await axios.get(url, { responseType: 'text' });

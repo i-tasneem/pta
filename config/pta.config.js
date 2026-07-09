@@ -54,13 +54,16 @@ module.exports = {
           calendar: 'NSE', cadenceMs: 60000, enabled: true, signalMode: 'shadow'
         })),
 
-      // Phase 2. Underlyings are futures contracts (securityId resolved at
-      // runtime and rolled monthly). NG signals derive from the liquid full
-      // NATURALGAS chain; NATGASMINI (lot 250 mmBtu) is the execution
-      // contract shown on cards. CRUDEOIL options are both signal and
-      // execution (lot 100 bbl).
-      { symbol: 'CRUDEOIL', class: 'MCX', securityId: null, exchangeSegment: 'MCX_COMM', calendar: 'MCX', cadenceMs: 20000, enabled: false, lotSize: 100 },
-      { symbol: 'NATURALGAS', class: 'MCX', securityId: null, exchangeSegment: 'MCX_COMM', calendar: 'MCX', cadenceMs: 20000, enabled: false, execContract: 'NATGASMINI', execLotSize: 250 }
+      // Phase 2 (shadow). Underlyings are futures contracts (securityId
+      // resolved at runtime, rolls monthly when the front option series
+      // dies). NG signals derive from the liquid full NATURALGAS chain;
+      // NATGASMINI (lot 250 mmBtu) is the execution contract shown on
+      // cards. CRUDEOIL options are both signal and execution (lot 100
+      // bbl). At 24s cadence the NSE-hours demand is 0.533 vs the 0.45
+      // budget — the scheduler stretches everyone ~1.19x until 15:30, then
+      // MCX inherits the whole budget for the evening session.
+      { symbol: 'CRUDEOIL', class: 'MCX', securityId: null, exchangeSegment: 'MCX_COMM', calendar: 'MCX', cadenceMs: 24000, enabled: true, signalMode: 'shadow', lotSize: 100 },
+      { symbol: 'NATURALGAS', class: 'MCX', securityId: null, exchangeSegment: 'MCX_COMM', calendar: 'MCX', cadenceMs: 24000, enabled: true, signalMode: 'shadow', execContract: 'NATGASMINI', execLotSize: 250 }
     ],
 
     // Back-compat view: everything that consumed instruments.indices keeps
@@ -188,6 +191,12 @@ module.exports = {
       STOCK: {
         cadenceMs: 60000,
         minTriggerRR: parseFloat(process.env.V2_STOCK_MIN_TRIGGER_RR) || 2.2
+      },
+      // Crude options are the deepest on MCX; NG wider. 2.0 splits the
+      // difference vs the 1.8 index floor — tune per-symbol post-shadow.
+      MCX: {
+        cadenceMs: 24000,
+        minTriggerRR: parseFloat(process.env.V2_MCX_MIN_TRIGGER_RR) || 2.0
       }
     },
     // How long to keep shadowing a non-triggered setup to see if its target

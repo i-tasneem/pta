@@ -6,6 +6,7 @@
 // to the UI. Every entry point is guarded so it can never break the poll loop.
 
 const StockGuards = require('./StockGuards');
+const McxEvents = require('./McxEvents');
 
 const ARCHETYPE_PRIORS = {
   WALL_CAPITULATION_BREAK: 0.55,
@@ -74,12 +75,18 @@ class V2Adapter {
     if (!e) {
       const u = this.universe.get(instrument) || {};
       const pc = this.perClass[u.class] || {};
+      // MCX options are options ON futures — the underlying IS the future,
+      // so basis ≡ 0 by construction and the basis archetype is degenerate.
+      const registry = u.class === 'MCX'
+        ? this.engine.ALL_ARCHETYPES.filter((a) => a.name !== 'BASIS_FLOW_DIVERGENCE_REVERSAL')
+        : undefined;
       e = new this.engine.SetupEngine(instrument, {
         ...this.lifecycleOpts,
         // slower tiers stretch staleness (lifecycle: staleMs = 4x cadence)
         cadenceMs: u.cadenceMs || pc.cadenceMs || undefined,
         // exchange clock for session phases (MCX evenings != NSE afternoons)
         regime: { calendar: u.calendar || 'NSE' },
+        registry,
         triggerGuard: (h) => this.allowTrigger(h)
       });
       this.engines.set(instrument, e);
@@ -96,6 +103,20 @@ class V2Adapter {
   // "signal" this way.)
   allowTrigger(h) {
     try {
+      // MCX event stand-down (design §2.2): never TRIGGER a fresh entry into
+      // a scheduled EIA release — writers get steamrolled by US data, and so
+      // would we. Setups keep evaluating; only the entry is blocked.
+      if (this.classOf(h.instrument) === 'MCX') {
+        const event = McxEvents.standDown(h.instrument);
+        if (event) {
+          if (!this.rrBlockLogged.has(h.id)) {
+            this.rrBlockLogged.add(h.id);
+            console.warn(`V2 trigger blocked ${h.id}: ${event} stand-down window`);
+          }
+          return false;
+        }
+      }
+
       const chain = this.chains.get(h.instrument);
       const pin = this.pinnedStrikes.get(h.id);
       if (!chain || !pin || !(pin.targetPremium > 0)) return true; // can't validate — don't block on data gaps
@@ -487,8 +508,21 @@ class V2Adapter {
       stage: h.stage, score: h.score, confidence: this.confidence(h),
       reasons: h.reasons, thesis: h.thesis,
       entryRef: h.entryRef, structuralStop: h.structuralStop, structuralTarget: h.structuralTarget,
-      exitLevels, plan, ladder, updatedAt: h.updatedAt
+      exitLevels, plan, ladder, updatedAt: h.updatedAt,
+      exec: this.execInfo(h.instrument), shadow: this.isShadow(h.instrument)
     };
+  }
+
+  // What the user actually trades. NG signals derive from the liquid full
+  // NATURALGAS chain but execute as NATGASMINI (same ₹/mmBtu strike scale,
+  // 1/5 lot) — locked decision, design §7.
+  execInfo(symbol) {
+    const u = this.universe.get(symbol);
+    if (!u) return null;
+    const contract = u.execContract || u.symbol;
+    const lotSize = u.execLotSize || u.lotSize || null;
+    if (!u.execContract && !lotSize) return null;
+    return { contract, lotSize };
   }
 
   confidence(h) {

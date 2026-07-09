@@ -196,17 +196,26 @@ class PTAServer {
       await this.scanners.addInstrument({ symbol: s.symbol, securityId: s.securityId, exchangeSegment: 'NSE_EQ' });
     }
 
+    // MCX: front-month future subscribed as the tick instrument.
+    this.mcxPlumbing = await this.discoverMcx();
+    for (const m of this.mcxPlumbing.ticks) {
+      await this.scanners.addInstrument({ symbol: m.symbol, securityId: m.securityId, exchangeSegment: 'MCX_COMM' });
+    }
+
     const connectProvider = async () => {
       await this.provider.connect();
       await this.provider.subscribeTicks(instruments);
       if (this.stockPlumbing.spots.length > 0) {
         await this.provider.subscribeTicks(this.stockPlumbing.spots);
       }
+      if (this.mcxPlumbing.ticks.length > 0) {
+        await this.provider.subscribeTicks(this.mcxPlumbing.ticks);
+      }
       const futLegs = [...this.futuresPairs, ...this.stockPlumbing.futures];
       if (futLegs.length > 0) {
         await this.provider.subscribeFutures(futLegs);
       }
-      console.log(`✓ Provider connected (${instruments.length} indices, ${this.stockPlumbing.spots.length} stocks)`);
+      console.log(`✓ Provider connected (${instruments.length} indices, ${this.stockPlumbing.spots.length} stocks, ${this.mcxPlumbing.ticks.length} MCX)`);
     };
 
     try {
@@ -248,7 +257,7 @@ class PTAServer {
 
     // Seed candle streams from broker history so indicators are warm at
     // boot instead of hours into the session
-    await this.bootstrapHistory([...instruments, ...this.stockPlumbing.spots]);
+    await this.bootstrapHistory([...instruments, ...this.stockPlumbing.spots, ...this.mcxPlumbing.ticks]);
 
     // Poll option chains via the budgeted, session-aware scheduler
     this.startChainPolling();
@@ -384,6 +393,52 @@ class PTAServer {
     }
   }
 
+  // Resolve enabled MCX-class entries: the chain underlying is the FRONT
+  // monthly FUTURES contract (rolls monthly — pollChainOnce advances to
+  // `mcxNext` when the front option series has no live expiry left). The
+  // future is also subscribed as a plain tick instrument: its own volume
+  // feeds participation via the spot-volume path, its LTP is the basis-free
+  // underlying mark (basis archetype is masked for MCX anyway).
+  async discoverMcx() {
+    const mcx = config.instruments.universe.filter(u => u.class === 'MCX' && u.enabled);
+    if (mcx.length === 0 || typeof this.provider.findCommodityFutures !== 'function') {
+      return { ticks: [] };
+    }
+
+    const cacheKey = `${config.redis.keyPrefix}sys:mcx:map`;
+    try {
+      let map = null;
+      const cached = await this.eventBus.client.get(cacheKey);
+      if (cached) {
+        map = JSON.parse(cached);
+        console.log(`✓ MCX futures from cache (${Object.keys(map).length} symbols)`);
+      } else {
+        map = await this.provider.findCommodityFutures(mcx.map(s => s.symbol));
+        await this.eventBus.client.set(cacheKey, JSON.stringify(map), { EX: 24 * 60 * 60 });
+        console.log('✓ MCX futures resolved:',
+          Object.entries(map).map(([s, v]) =>
+            `${s}=${v.front.securityId}(${v.front.expiry})${v.next ? `→${v.next.securityId}` : ''}`).join(', '));
+      }
+
+      const ticks = [];
+      for (const inst of mcx) {
+        const m = map[inst.symbol];
+        if (!m || !m.front) {
+          console.warn(`⚠ MCX unresolved, staying dark: ${inst.symbol}`);
+          continue;
+        }
+        inst.securityId = String(m.front.securityId);
+        inst.mcxNext = m.next ? { securityId: String(m.next.securityId), expiry: m.next.expiry } : null;
+        if (!inst.lotSize && m.front.lotSize) inst.lotSize = m.front.lotSize;
+        ticks.push({ symbol: inst.symbol, securityId: inst.securityId, exchangeSegment: 'MCX_COMM' });
+      }
+      return { ticks };
+    } catch (err) {
+      console.error('⚠ MCX discovery failed — commodities stay dark until next restart:', err.message);
+      return { ticks: [] };
+    }
+  }
+
   // Seed an admin from env on first boot so there's always a way in to issue
   // passwords to signups.
   async bootstrapAdmin() {
@@ -417,7 +472,7 @@ class PTAServer {
       try {
         const candles = await this.provider.getIntradayCandles(
           inst.securityId, inst.exchangeSegment || 'IDX_I',
-          inst.exchangeSegment === 'NSE_EQ' ? 'EQUITY' : 'INDEX', fromDate, toDate
+          historyType(inst), fromDate, toDate
         );
         if (!candles || candles.length === 0) continue;
 
@@ -470,7 +525,7 @@ class PTAServer {
       await new Promise(r => setTimeout(r, 1200)); // pace vs the rate limit
       const daily = await this.provider.getDailyCandles(
         inst.securityId, inst.exchangeSegment || 'IDX_I',
-        inst.exchangeSegment === 'NSE_EQ' ? 'EQUITY' : 'INDEX', fromDate, toDate
+        historyType(inst), fromDate, toDate
       );
       if (daily && daily.length) {
         await this.seedCandleStream('1d', inst.symbol, daily.slice(-300));
@@ -553,7 +608,8 @@ class PTAServer {
         calendar: inst.calendar || 'NSE',
         cadenceMs: inst.cadenceMs || 21000,
         securityId: inst.securityId,
-        exchangeSegment: inst.exchangeSegment
+        exchangeSegment: inst.exchangeSegment,
+        mcxNext: inst.mcxNext || null // roll target for MCX option series
       });
     }
     this.chainScheduler.start((inst) => this.pollChainOnce(inst));
@@ -583,6 +639,26 @@ class PTAServer {
             .map((e) => String(e).slice(0, 10))
             .filter((e) => e >= today)
             .sort()[0] || null;
+          // MCX option series die ~2 days before their underlying future:
+          // an empty expiry list means the front series is done — roll the
+          // underlying to the next monthly future and refetch next slot.
+          if (!next && inst.class === 'MCX' && inst.mcxNext && inst.securityId !== inst.mcxNext.securityId) {
+            console.warn(`MCX roll ${inst.symbol}: underlying ${inst.securityId} -> ${inst.mcxNext.securityId} (fut exp ${inst.mcxNext.expiry})`);
+            try {
+              await this.provider.unsubscribeTicks([{ symbol: inst.symbol, securityId: inst.securityId, exchangeSegment: 'MCX_COMM' }]);
+            } catch { /* resubscribe below matters more */ }
+            inst.securityId = inst.mcxNext.securityId;
+            try {
+              await this.provider.subscribeTicks([{ symbol: inst.symbol, securityId: inst.securityId, exchangeSegment: 'MCX_COMM' }]);
+            } catch (e) {
+              console.warn(`MCX roll ${inst.symbol}: tick resubscribe deferred (${e.message})`);
+            }
+            // Drop the daily discovery cache so a restart re-resolves fresh
+            // front/next instead of reviving the dead contract.
+            await this.eventBus.client.del(`${config.redis.keyPrefix}sys:mcx:map`).catch(() => {});
+            this.chainExpiries.delete(inst.symbol);
+            return;
+          }
           this.chainExpiries.set(inst.symbol, { value: next, day: today });
           if (!next) console.warn(`Chain poll ${inst.symbol}: no usable expiry in ${JSON.stringify(list)}`);
           return; // expiry list call shares the chain rate limit; fetch chain next slot
@@ -644,6 +720,13 @@ class PTAServer {
     await this.db?.close();
     console.log('✓ PTA Server stopped');
   }
+}
+
+// Dhan charts APIs want the instrument type of the security being queried.
+function historyType(inst) {
+  if (inst.exchangeSegment === 'NSE_EQ') return 'EQUITY';
+  if (inst.exchangeSegment === 'MCX_COMM') return 'FUTCOM';
+  return 'INDEX';
 }
 
 const server = new PTAServer();
