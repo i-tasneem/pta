@@ -11,13 +11,13 @@ module.exports = {
     rateLimit: 25,
     tokenRefreshInterval: 20 * 60 * 60 * 1000,
     // Chain-poll budget (requests/sec) fed to ChainScheduler. Hard-won
-    // numbers: the probe's one-off burst passed 9 unique chains in 3s, but
-    // SUSTAINED 1.5 req/s drew Dhan 805s ("user may be blocked") within a
-    // minute of the 2026-07-09 deploy — Dhan's sustained ceiling is tighter
-    // than its burst window. 0.5 is the working point (17 instruments run
-    // ~1.3x their cadence targets); raise cautiously via env while watching
-    // for 805s — the scheduler auto-pauses 60s when one appears.
-    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 0.5,
+    // numbers (2026-07-09): the probe's one-off burst passed 9 unique chains
+    // in 3s, but sustained sending drew Dhan 805s ("user may be blocked").
+    // Measured over a 40-min window at ~41 attempts/min: ~10/min rejected →
+    // acceptance ceiling ≈ 30/min (0.5/s) sustained. 0.45 runs 10% under
+    // that; the scheduler also auto-pauses 60s on any 805 (circuit breaker).
+    // Raise only with a long clean-log soak, never on burst evidence.
+    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 0.45,
     chainMinUniqueGapMs: parseInt(process.env.CHAIN_MIN_UNIQUE_GAP_MS) || 3000
   },
 
@@ -31,12 +31,12 @@ module.exports = {
     // which rolls monthly — never hardcode it).
     universe: [
       // Dhan numeric security IDs (api-scrip-master), segment IDX_I for indices
-      { symbol: 'NIFTY', class: 'INDEX', securityId: '13', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
-      { symbol: 'BANKNIFTY', class: 'INDEX', securityId: '25', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
-      { symbol: 'FINNIFTY', class: 'INDEX', securityId: '27', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
-      { symbol: 'MIDCPNIFTY', class: 'INDEX', securityId: '442', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
-      { symbol: 'SENSEX', class: 'INDEX', securityId: '51', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
-      { symbol: 'BANKEX', class: 'INDEX', securityId: '69', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 21000, enabled: true },
+      { symbol: 'NIFTY', class: 'INDEX', securityId: '13', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 24000, enabled: true },
+      { symbol: 'BANKNIFTY', class: 'INDEX', securityId: '25', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 24000, enabled: true },
+      { symbol: 'FINNIFTY', class: 'INDEX', securityId: '27', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 24000, enabled: true },
+      { symbol: 'MIDCPNIFTY', class: 'INDEX', securityId: '442', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 24000, enabled: true },
+      { symbol: 'SENSEX', class: 'INDEX', securityId: '51', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 24000, enabled: true },
+      { symbol: 'BANKEX', class: 'INDEX', securityId: '69', exchangeSegment: 'IDX_I', calendar: 'NSE', cadenceMs: 24000, enabled: true },
 
       // Phase 1 seed (12 by option liquidity; the nightly universe job
       // replaces this with a data-driven ranking — do not curate by hand).
@@ -51,7 +51,7 @@ module.exports = {
           'KOTAKBANK', 'TATASTEEL', 'INFY', 'ADANIENT', 'TCS', 'LT']
         .map((symbol) => ({
           symbol, class: 'STOCK', securityId: null, exchangeSegment: 'NSE_EQ',
-          calendar: 'NSE', cadenceMs: 30000, enabled: true, signalMode: 'shadow'
+          calendar: 'NSE', cadenceMs: 60000, enabled: true, signalMode: 'shadow'
         })),
 
       // Phase 2. Underlyings are futures contracts (securityId resolved at
@@ -186,7 +186,7 @@ module.exports = {
     // and a higher R:R floor to pay for wider spreads + gap risk.
     perClass: {
       STOCK: {
-        cadenceMs: 30000,
+        cadenceMs: 60000,
         minTriggerRR: parseFloat(process.env.V2_STOCK_MIN_TRIGGER_RR) || 2.2
       }
     },
