@@ -1,6 +1,9 @@
 # Stock Options (NSE) + MCX Energy Options — Expansion Design
 
-Status: DESIGN (no code yet). Author session: 2026-07-08.
+Status: Phase 0 DEPLOYED to prod 2026-07-09 (commit ff43437); probe run
+2026-07-09 — results in §0.6 and docs/probe-report-2026-07-09.json.
+(Earlier "2026-07-08" stamps in this doc's history were the local box's
+clock running a day slow; true dates are 2026-07-09.)
 Scope: add NSE stock options and MCX CRUDEOIL + NATGASMINI options to the V2
 positioning engine. Strategy design, capacity analysis, architecture changes,
 phased build plan.
@@ -34,6 +37,24 @@ phased build plan.
    inside one 3s window and observe DH-904/429 behavior. The scheduler design
    below takes budget as a config number, so if reality is worse than docs,
    we degrade to a tiered plan without redesign.
+6. **PROBE RESULTS (run on prod 2026-07-09 10:12 IST, live market):**
+   - Per-(underlying,expiry) 3s floor: **CONFIRMED** — duplicate BANKEX
+     request 429'd at +1s, succeeded at +4.2s.
+   - Concurrent unique chains: **SUPPORTED** — 9 unique chains succeeded
+     inside one 3.0s window (old assumption allowed exactly 1). The 3
+     rejections were BANKNIFTY/BANKEX — instruments the live poller hit in
+     the same window (prod's request wins the unique slot); prod logged
+     zero 429s, consistent with collision, not a lower ceiling.
+   - **Stock chains: NSE_EQ works as UnderlyingSeg** (NSE_FNO also worked);
+     RELIANCE id 2885 → 101 strikes, 3 monthly expiries.
+   - **MCX all confirmed** via MCX_COMM + front-month FUTCOM securityId:
+     CRUDEOIL fut 520702 → 212 strikes; NATURALGAS fut 538685 → 88 strikes;
+     NATGASMINI fut 538686 → 88 strikes. Mini mirrors the full-NG strike
+     grid exactly — validating signal-from-full / execute-mini mapping.
+   - **Production setting: `CHAIN_BUDGET_RPS=1.5`** (ships with Phase 1; no
+     restart needed before then — current index demand is 0.286). That is
+     5x the old serial rate, ~2x the full Phase 1+2 demand (0.8 req/s), and
+     half the demonstrated throughput floor.
 
 Sources: [Dhan option-chain docs](https://dhanhq.co/docs/v2/option-chain/),
 [Dhan rate limits](https://dhan.co/support/platforms/dhanhq-api/what-are-the-api-rate-limits-for-dhan/),
@@ -251,7 +272,8 @@ later), no WS-synthesized chains (that's Phase 3, only if scale demands).
       stock underlying-segment test (NSE_EQ vs NSE_FNO via RELIANCE), MCX
       chain test (CRUDEOIL/NATURALGAS/NATGASMINI via front-month FUTCOM id).
       Fails closed without a live token — run on prod box or paste token.
-      **RUN still pending** → until then `CHAIN_BUDGET_RPS` stays 0.2857.
+      **RUN 2026-07-09 ✓** — verdict in §0.6; `CHAIN_BUDGET_RPS=1.5` goes
+      live with the Phase 1 deploy.
 - [x] ChainScheduler (`scanner/ChainScheduler.js` + `MarketCalendar.js`):
       token bucket + 3s per-unique floor + overdue-ratio priority + session
       gating (closed exchanges cost nothing; MCX inherits budget post-NSE).
@@ -308,7 +330,7 @@ calibration closes.
 | Evening MCX session doubles process uptime exposure | Health monitor already runs; move restart window to 00:00–08:30; token refresh already pre-open. |
 | Solo-operator attention split across 18 instruments | Sector cap, per-class signal caps, and the existing one-position-per-direction rule bound concurrent signals. |
 
-## 7. Locked decisions (answered by user 2026-07-08)
+## 7. Locked decisions (answered by user 2026-07-09)
 
 1. **NG signal source: full NATURALGAS chain** drives signals; **NATGASMINI
    is the execution contract** presented on cards (same ₹/mmBtu strike

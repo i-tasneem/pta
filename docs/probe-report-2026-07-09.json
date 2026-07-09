@@ -1,0 +1,273 @@
+{
+  "startedAt": "2026-07-09T04:42:14.049Z",
+  "tests": {
+    "sanity": {
+      "status": 200,
+      "ms": 348,
+      "errorCode": null,
+      "errorMessage": null,
+      "strikes": null,
+      "expiries": 18
+    },
+    "burst": {
+      "windowMs": 3014,
+      "total": 12,
+      "ok": 9,
+      "rateLimited": 3,
+      "detail": [
+        {
+          "underlying": "NIFTY",
+          "expiry": "2026-07-14",
+          "status": 200,
+          "ms": 430,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 237,
+          "expiries": null
+        },
+        {
+          "underlying": "NIFTY",
+          "expiry": "2026-07-21",
+          "status": 200,
+          "ms": 230,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 224,
+          "expiries": null
+        },
+        {
+          "underlying": "BANKNIFTY",
+          "expiry": "2026-07-28",
+          "status": 429,
+          "ms": 212,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": null,
+          "expiries": null,
+          "raw": "{\"data\":{\"805\":\"Too many requests. Further requests may result in the user being blocked.\"},\"status\":\"failed\"}"
+        },
+        {
+          "underlying": "BANKNIFTY",
+          "expiry": "2026-08-25",
+          "status": 200,
+          "ms": 231,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 380,
+          "expiries": null
+        },
+        {
+          "underlying": "FINNIFTY",
+          "expiry": "2026-07-28",
+          "status": 200,
+          "ms": 226,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 250,
+          "expiries": null
+        },
+        {
+          "underlying": "FINNIFTY",
+          "expiry": "2026-08-25",
+          "status": 200,
+          "ms": 219,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 155,
+          "expiries": null
+        },
+        {
+          "underlying": "MIDCPNIFTY",
+          "expiry": "2026-07-28",
+          "status": 200,
+          "ms": 277,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 262,
+          "expiries": null
+        },
+        {
+          "underlying": "MIDCPNIFTY",
+          "expiry": "2026-08-25",
+          "status": 200,
+          "ms": 208,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 260,
+          "expiries": null
+        },
+        {
+          "underlying": "SENSEX",
+          "expiry": "2026-07-09",
+          "status": 200,
+          "ms": 246,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 189,
+          "expiries": null
+        },
+        {
+          "underlying": "SENSEX",
+          "expiry": "2026-07-16",
+          "status": 200,
+          "ms": 223,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 189,
+          "expiries": null
+        },
+        {
+          "underlying": "BANKEX",
+          "expiry": "2026-07-30",
+          "status": 429,
+          "ms": 224,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": null,
+          "expiries": null,
+          "raw": "{\"data\":{\"805\":\"Too many requests. Further requests may result in the user being blocked.\"},\"status\":\"failed\"}"
+        },
+        {
+          "underlying": "BANKEX",
+          "expiry": "2026-08-27",
+          "status": 429,
+          "ms": 205,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": null,
+          "expiries": null,
+          "raw": "{\"data\":{\"805\":\"Too many requests. Further requests may result in the user being blocked.\"},\"status\":\"failed\"}"
+        }
+      ]
+    },
+    "duplicate": {
+      "first": {
+        "status": 429,
+        "ms": 192,
+        "errorCode": null,
+        "errorMessage": null,
+        "strikes": null,
+        "expiries": null,
+        "raw": "{\"data\":{\"805\":\"Too many requests. Further requests may result in the user being blocked.\"},\"status\":\"failed\"}"
+      },
+      "dupFast": {
+        "status": 429,
+        "ms": 207,
+        "errorCode": null,
+        "errorMessage": null,
+        "strikes": null,
+        "expiries": null,
+        "raw": "{\"data\":{\"805\":\"Too many requests. Further requests may result in the user being blocked.\"},\"status\":\"failed\"}"
+      },
+      "dupSlow": {
+        "status": 200,
+        "ms": 213,
+        "errorCode": null,
+        "errorMessage": null,
+        "strikes": 198,
+        "expiries": null
+      }
+    },
+    "stock": {
+      "NSE_EQ": {
+        "status": 200,
+        "ms": 204,
+        "errorCode": null,
+        "errorMessage": null,
+        "strikes": null,
+        "expiries": 3
+      },
+      "NSE_FNO": {
+        "status": 200,
+        "ms": 208,
+        "errorCode": null,
+        "errorMessage": null,
+        "strikes": null,
+        "expiries": 3
+      },
+      "chain": {
+        "segment": "NSE_EQ",
+        "expiry": "2026-07-28",
+        "status": 200,
+        "ms": 222,
+        "errorCode": null,
+        "errorMessage": null,
+        "strikes": 101,
+        "expiries": null
+      }
+    },
+    "mcx": {
+      "CRUDEOIL": {
+        "future": {
+          "securityId": "520702",
+          "expiry": "2026-07-20"
+        },
+        "expirylist": {
+          "status": 200,
+          "ms": 214,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": null,
+          "expiries": 3
+        },
+        "chain": {
+          "status": 200,
+          "ms": 227,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 212,
+          "expiries": null
+        }
+      },
+      "NATURALGAS": {
+        "future": {
+          "securityId": "538685",
+          "expiry": "2026-07-28"
+        },
+        "expirylist": {
+          "status": 200,
+          "ms": 208,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": null,
+          "expiries": 3
+        },
+        "chain": {
+          "status": 200,
+          "ms": 217,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 88,
+          "expiries": null
+        }
+      },
+      "NATGASMINI": {
+        "future": {
+          "securityId": "538686",
+          "expiry": "2026-07-28"
+        },
+        "expirylist": {
+          "status": 200,
+          "ms": 207,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": null,
+          "expiries": 3
+        },
+        "chain": {
+          "status": 200,
+          "ms": 218,
+          "errorCode": null,
+          "errorMessage": null,
+          "strikes": 88,
+          "expiries": null
+        }
+      }
+    }
+  },
+  "verdict": {
+    "perUniqueHolds": false,
+    "duplicateFloorSeen": true,
+    "recommendedChainBudgetRps": 0.2857142857142857
+  }
+}
