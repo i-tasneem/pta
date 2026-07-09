@@ -51,10 +51,21 @@ phased build plan.
      CRUDEOIL fut 520702 → 212 strikes; NATURALGAS fut 538685 → 88 strikes;
      NATGASMINI fut 538686 → 88 strikes. Mini mirrors the full-NG strike
      grid exactly — validating signal-from-full / execute-mini mapping.
-   - **Production setting: `CHAIN_BUDGET_RPS=1.5`** (ships with Phase 1; no
-     restart needed before then — current index demand is 0.286). That is
-     5x the old serial rate, ~2x the full Phase 1+2 demand (0.8 req/s), and
-     half the demonstrated throughput floor.
+   - ~~Production setting: `CHAIN_BUDGET_RPS=1.5`~~ **SUPERSEDED by the
+     Phase 1 live deploy (2026-07-09 ~12:00 IST):** sustained sending at
+     ~41 attempts/min drew continuous Dhan 805s ("user may be blocked") —
+     ~10/min rejected → **sustained acceptance ceiling ≈ 30/min (0.5/s)**,
+     far below the burst behavior the probe measured. Dhan's limiter
+     tolerates a burst window but not a sustained rate anywhere near it.
+     **Production setting: 0.45 req/s** (10% under ceiling), 6 indices @
+     24s + 12 stocks @ 60s = 0.45 demand exactly. ChainScheduler.pause()
+     circuit-breaks 60s on any 805. Raise only after a multi-session
+     clean-log soak.
+   - **Phase 2 capacity note:** adding 2 MCX @ 20s (+0.1) exceeds the 0.45
+     budget during NSE hours — the scheduler stretches everyone ~1.2x
+     proportionally (acceptable), or rebalance cadences then. After 15:30
+     the entire budget serves the 2 MCX chains regardless (~7s effective
+     floor vs the 3s per-unique rule — plenty).
 
 Sources: [Dhan option-chain docs](https://dhanhq.co/docs/v2/option-chain/),
 [Dhan rate limits](https://dhan.co/support/platforms/dhanhq-api/what-are-the-api-rate-limits-for-dhan/),
