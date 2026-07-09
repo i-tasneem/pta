@@ -273,14 +273,17 @@ class ExpressGateway {
       res.json({ enabled: true, setups: this.v2.getActiveSetups() });
     });
 
-    // V2 signal history from Postgres
+    // V2 signal history from Postgres. Shadow signals (stock/MCX validation
+    // classes) are hidden by default — pass ?shadow=1 to inspect them.
     this.app.get('/api/v2/signals', async (req, res) => {
       if (!this.db || !this.db.enabled) return res.json({ signals: [] });
       try {
         const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+        const shadowFilter = req.query.shadow === '1' ? '' : 'WHERE NOT COALESCE(s.shadow, false)';
         const r = await this.db.query(
           `SELECT s.*, o.outcome, o.pnl, o.duration_ms
              FROM signals s LEFT JOIN signal_outcomes o ON o.signal_id = s.id
+            ${shadowFilter}
             ORDER BY s.created_at DESC LIMIT $1`,
           [limit]
         );

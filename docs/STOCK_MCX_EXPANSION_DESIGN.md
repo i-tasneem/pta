@@ -294,11 +294,25 @@ later), no WS-synthesized chains (that's Phase 3, only if scale demands).
       verdict + resolver (stock NSE_EQ ids, MCX front-month FUTCOM ids).
 
 **Phase 1 — NSE stocks (shadow → live)**
-- [ ] Resolver + spot/futures plumbing + stock gates + universe job.
-- [ ] Run **shadow-only** (setups tracked, outcomes recorded, no signals
-      surfaced) ≥ 2 weeks or until backtest on accrued archive sanity-checks
-      thresholds per class.
-- [ ] Flip to live per-name (top 10), watch funnel telemetry by class.
+- [x] BUILT 2026-07-09: resolver (`findStockInstruments` — NSE_EQ equity id
+      for chain underlying + spot tick, nearest FUTSTK for basis; Redis-cached
+      24h); stock spot volume (cumulative→delta in DhanProvider, preferred
+      over futures volume for participation); per-class engine opts
+      (cadence 30s, staleness 120s, calendar) via `V2Adapter.engineFor`;
+      **shadow mode** (`signals.shadow` column — full lifecycle + outcomes,
+      hidden from /api/v2/signals unless ?shadow=1); gates: MWPL ban veto +
+      earnings blackout T-2..T+1 (`signals/StockGuards.js`, fail-closed per
+      name, ban list stale-tolerant), pinned |delta|≥0.35 + ATM spread ≤1.5%
+      + R:R≥2.2 at trigger; archive rows self-describing (inst_class).
+      12-stock seed ENABLED shadow. `CHAIN_BUDGET_RPS` default now 1.5
+      (probe-validated). Earnings feed manual: `scripts/add-earnings.js`.
+      NOT built (deferred by design): nightly universe ranking job (seed is
+      static until ranking data accrues), expiry-week NWF damping + sector
+      cap (post-shadow calibration decisions), stock-discovery boot retry.
+- [ ] Run **shadow-only** ≥ 2 weeks or until backtest on accrued archive
+      sanity-checks thresholds per class. Shadow clock starts at first
+      post-deploy session.
+- [ ] Flip to live per-name (12 seed names), watch funnel telemetry by class.
 
 **Phase 2 — MCX (shadow → live)**
 - [ ] MCX calendar + event table + roll logic + basis-archetype mask +

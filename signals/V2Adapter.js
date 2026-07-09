@@ -5,6 +5,8 @@
 // risk plan, persists signals/outcomes to Postgres, and surfaces active setups
 // to the UI. Every entry point is guarded so it can never break the poll loop.
 
+const StockGuards = require('./StockGuards');
+
 const ARCHETYPE_PRIORS = {
   WALL_CAPITULATION_BREAK: 0.55,
   WALL_ABSORPTION_FADE: 0.60,
@@ -38,13 +40,46 @@ class V2Adapter {
     this.minTriggerRR = (config && config.v2 && config.v2.minTriggerRR) || 1.8;
     this.chains = new Map();         // instrument -> latest chain (live premiums for the trigger guard)
     this.rrBlockLogged = new Set();  // hypothesis ids whose R:R block was already logged
+
+    // Instrument classes (INDEX | STOCK | MCX) + per-class engine overrides.
+    // signalMode 'shadow' = full lifecycle + outcomes recorded, but never a
+    // live/actionable signal (sequencing rule: new classes stay shadow until
+    // the index calibration loop closes).
+    this.universe = new Map();       // symbol -> universe entry
+    for (const u of ((config && config.instruments && config.instruments.universe) || [])) {
+      this.universe.set(u.symbol, u);
+    }
+    this.perClass = (config && config.v2 && config.v2.perClass) || {};
+    this.guards = new StockGuards(db, eventBus, config && config.redis && config.redis.keyPrefix);
+    this.vetoLogged = new Map();     // symbol -> IST day the active veto was last logged
+  }
+
+  classOf(symbol) {
+    const u = this.universe.get(symbol);
+    return (u && u.class) || 'INDEX';
+  }
+
+  isShadow(symbol) {
+    const u = this.universe.get(symbol);
+    return !!(u && u.signalMode === 'shadow');
+  }
+
+  minTriggerRRFor(symbol) {
+    const pc = this.perClass[this.classOf(symbol)];
+    return (pc && pc.minTriggerRR) || this.minTriggerRR;
   }
 
   engineFor(instrument) {
     let e = this.engines.get(instrument);
     if (!e) {
+      const u = this.universe.get(instrument) || {};
+      const pc = this.perClass[u.class] || {};
       e = new this.engine.SetupEngine(instrument, {
         ...this.lifecycleOpts,
+        // slower tiers stretch staleness (lifecycle: staleMs = 4x cadence)
+        cadenceMs: u.cadenceMs || pc.cadenceMs || undefined,
+        // exchange clock for session phases (MCX evenings != NSE afternoons)
+        regime: { calendar: u.calendar || 'NSE' },
         triggerGuard: (h) => this.allowTrigger(h)
       });
       this.engines.set(instrument, e);
@@ -65,15 +100,30 @@ class V2Adapter {
       const pin = this.pinnedStrikes.get(h.id);
       if (!chain || !pin || !(pin.targetPremium > 0)) return true; // can't validate — don't block on data gaps
       const leg = this.findLeg(chain, pin.strike, h.direction);
+
+      // Stock-option liquidity gates (design §1.4): a far-OTM pin or a wide
+      // spread makes the premium R:R fiction — block the trigger, stay READY.
+      if (this.classOf(h.instrument) === 'STOCK') {
+        const viable = V2Adapter.stockTriggerViable(pin, leg);
+        if (!viable.ok) {
+          if (!this.rrBlockLogged.has(h.id)) {
+            this.rrBlockLogged.add(h.id);
+            console.warn(`V2 trigger blocked ${h.id}: ${viable.reason}`);
+          }
+          return false;
+        }
+      }
+
       const prem = leg ? Number(leg.ltp) || 0 : 0;
       if (!(prem > 0)) return true;
       const reward = pin.targetPremium - prem;
       const risk = prem - pin.stopPremium;
-      const ok = reward > 0 && risk > 0 && reward / risk >= this.minTriggerRR;
+      const minRR = this.minTriggerRRFor(h.instrument);
+      const ok = reward > 0 && risk > 0 && reward / risk >= minRR;
       if (!ok && !this.rrBlockLogged.has(h.id)) {
         this.rrBlockLogged.add(h.id);
         const rr = risk > 0 ? (reward / risk).toFixed(2) : 'n/a';
-        console.warn(`V2 trigger blocked ${h.id}: live premium ${prem} vs pin entry ${pin.entryPremium} target ${pin.targetPremium} stop ${pin.stopPremium} (rr ${rr} < ${this.minTriggerRR})`);
+        console.warn(`V2 trigger blocked ${h.id}: live premium ${prem} vs pin entry ${pin.entryPremium} target ${pin.targetPremium} stop ${pin.stopPremium} (rr ${rr} < ${minRR})`);
       }
       return ok;
     } catch {
@@ -81,10 +131,43 @@ class V2Adapter {
     }
   }
 
+  // Pure so it can be tested without an engine or DB. delta floor 0.35 keeps
+  // pins out of illiquid far-OTM strikes; spread cap 1.5% of mid keeps the
+  // premium R:R honest after crossing the spread.
+  static stockTriggerViable(pin, leg, maxSpreadPct = 0.015, minDelta = 0.35) {
+    if (pin && Math.abs(pin.delta || 0) < minDelta) {
+      return { ok: false, reason: `pinned |delta| ${Math.abs(pin.delta || 0).toFixed(2)} < ${minDelta}` };
+    }
+    if (leg && leg.bid > 0 && leg.ask > 0) {
+      const mid = (leg.bid + leg.ask) / 2;
+      const spreadPct = mid > 0 ? (leg.ask - leg.bid) / mid : 0;
+      if (spreadPct > maxSpreadPct) {
+        return { ok: false, reason: `ATM spread ${(spreadPct * 100).toFixed(1)}% > ${maxSpreadPct * 100}% of premium` };
+      }
+    }
+    return { ok: true };
+  }
+
   async onChain(chain) {
     try {
       if (!chain || !Array.isArray(chain.strikes) || chain.strikes.length === 0) return;
       this.chains.set(chain.instrument, chain);
+
+      // Stock pre-engine vetoes: in MWPL ban or earnings blackout, no setups
+      // form at all (ΔOI reads are mechanically distorted / IV baselines are
+      // event-poisoned). Chain archiving happens upstream and continues.
+      if (this.classOf(chain.instrument) === 'STOCK') {
+        const veto = await this.guards.vetoReason(chain.instrument);
+        if (veto) {
+          const day = StockGuards.istDay();
+          if (this.vetoLogged.get(chain.instrument) !== `${veto}|${day}`) {
+            this.vetoLogged.set(chain.instrument, `${veto}|${day}`);
+            console.warn(`V2 ${chain.instrument}: vetoed all day (${veto})`);
+          }
+          this.setups.set(chain.instrument, []);
+          return;
+        }
+      }
 
       const state = await this.readState(chain.instrument);
       const futVolumeDelta = Number(chain.futVolume) || 0;
@@ -433,8 +516,8 @@ class V2Adapter {
       await this.db.query(
         `INSERT INTO signals
            (id, symbol, strategy, regime, direction, state, score, confidence,
-            entry_zone, sl, target, reason, evidence, triggered_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            entry_zone, sl, target, reason, evidence, triggered_at, shadow)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (id) DO UPDATE SET
            state = EXCLUDED.state, score = EXCLUDED.score, confidence = EXCLUDED.confidence,
            sl = EXCLUDED.sl, target = EXCLUDED.target, reason = EXCLUDED.reason,
@@ -447,7 +530,8 @@ class V2Adapter {
           JSON.stringify(view.plan ? { premium: view.plan.targetPremium, underlying: (view.exitLevels && view.exitLevels.target.underlying) ?? view.structuralTarget, source: view.plan.targetSource } : null),
           JSON.stringify(t.reasons || []),
           JSON.stringify([]),
-          t.to === 'TRIGGERED' ? new Date(t.ts) : null
+          t.to === 'TRIGGERED' ? new Date(t.ts) : null,
+          this.isShadow(t.instrument)
         ]
       );
     } catch (err) {

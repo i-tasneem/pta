@@ -243,8 +243,16 @@ class DhanProvider extends MarketDataProvider {
     if (!mapping) return;
 
     const state = this.tickState.get(securityId) || {};
+    // Spot legs with REAL volume (stocks; indices always report 0) convert
+    // the cumulative day volume to deltas here, exactly like the FUT legs.
+    const prevCumVol = state.volume || 0;
     Object.assign(state, fields);
     this.tickState.set(securityId, state);
+    if (mapping.role !== 'FUT' && fields.volume !== undefined) {
+      if (prevCumVol > 0 && fields.volume > prevCumVol) {
+        state._pendingVol = (state._pendingVol || 0) + (fields.volume - prevCumVol);
+      }
+    }
 
     // Futures legs never emit; they feed volume/spread into the index tick.
     // Feed volume is cumulative for the day — convert to deltas here.
@@ -270,10 +278,14 @@ class DhanProvider extends MarketDataProvider {
     const change = prevClose ? state.lastPrice - prevClose : 0;
 
     // Indices trade no volume and quote no spread; both come from the
-    // paired current-month future
+    // paired current-month future. Stocks have real spot volume — prefer it
+    // (participation should measure the cash market, not the future).
     const fut = this.futuresState.get(mapping.symbol);
-    const volumeDelta = fut ? fut.pendingVolume : 0;
+    const spotVolDelta = state._pendingVol || 0;
+    state._pendingVol = 0;
+    const futVolDelta = fut ? fut.pendingVolume : 0;
     if (fut) fut.pendingVolume = 0;
+    const volumeDelta = spotVolDelta > 0 ? spotVolDelta : futVolDelta;
 
     this.lastTickAt = Date.now();
     this.emit('tick', {
@@ -587,6 +599,76 @@ class DhanProvider extends MarketDataProvider {
       throw new Error(`scrip master parsed ${lineCount} lines but resolved 0 index futures (truncated download?)`);
     }
     return Object.fromEntries(best);
+  }
+
+  // Streams the DETAILED scrip master once and resolves, per stock symbol,
+  // the NSE equity (option-chain underlying + spot tick; probe confirmed
+  // NSE_EQ + equity id is the chain's underlying scheme) and the
+  // nearest-expiry NSE stock future (basis leg). Same streaming hazards as
+  // findIndexFutures: capture stream errors, fail loudly on zero matches.
+  async findStockInstruments(symbols) {
+    const url = 'https://images.dhan.co/api-data/api-scrip-master-detailed.csv';
+    const response = await axios.get(url, { responseType: 'stream' });
+    const rl = readline.createInterface({ input: response.data, crlfDelay: Infinity });
+
+    let streamError = null;
+    response.data.on('error', (err) => { streamError = err; rl.close(); });
+
+    const wanted = new Set(symbols);
+    const today = new Date().toISOString().slice(0, 10);
+    const out = new Map(); // symbol -> { equity, future }
+    let cols = null;
+    let lineCount = 0;
+
+    for await (const line of rl) {
+      lineCount++;
+      const values = line.split(',');
+
+      if (!cols) {
+        cols = {};
+        values.forEach((h, i) => { cols[h.trim()] = i; });
+        continue;
+      }
+
+      const get = (name) => {
+        const i = cols[name];
+        return i == null ? '' : (values[i] || '').trim();
+      };
+
+      const instr = get('INSTRUMENT');
+      if (instr !== 'EQUITY' && instr !== 'FUTSTK') continue;
+      if (get('EXCH_ID') !== 'NSE') continue;
+
+      const underlying = get('UNDERLYING_SYMBOL');
+      if (!wanted.has(underlying)) continue;
+
+      const entry = out.get(underlying) || {};
+      if (instr === 'EQUITY') {
+        // Prefer the EQ series row (BSE uses A/B; NSE mainboard is EQ)
+        const series = get('SERIES');
+        if (!entry.equity || (series === 'EQ' && entry.equity.series !== 'EQ')) {
+          entry.equity = { securityId: get('SECURITY_ID'), series };
+        }
+      } else {
+        const expiry = get('SM_EXPIRY_DATE').slice(0, 10);
+        if (expiry && expiry >= today && (!entry.future || expiry < entry.future.expiry)) {
+          entry.future = {
+            securityId: get('SECURITY_ID'),
+            expiry,
+            lotSize: parseFloat(get('LOT_SIZE')) || 0
+          };
+        }
+      }
+      out.set(underlying, entry);
+    }
+
+    if (streamError) {
+      throw new Error(`scrip master stream failed after ${lineCount} lines: ${streamError.message}`);
+    }
+    if (out.size === 0) {
+      throw new Error(`scrip master parsed ${lineCount} lines but resolved 0 stocks (truncated download?)`);
+    }
+    return Object.fromEntries(out);
   }
 
   async getInstrumentMaster() {

@@ -10,12 +10,12 @@ module.exports = {
     restUrl: 'https://api.dhan.co',
     rateLimit: 25,
     tokenRefreshInterval: 20 * 60 * 60 * 1000,
-    // Chain-poll budget (requests/sec) fed to ChainScheduler. Dhan's documented
-    // limits: Data-API bucket 5 req/s, plus 1 request per UNIQUE underlying
-    // per 3s. Default stays at the old global-serial rate until the burst
-    // probe (scripts/probe-chain-limit.js) validates the docs on this account;
-    // raise via env afterwards — no redeploy needed.
-    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 1 / 3.5,
+    // Chain-poll budget (requests/sec) fed to ChainScheduler. Dhan's limits:
+    // Data-API bucket 5 req/s, plus 1 request per UNIQUE underlying+expiry
+    // per 3s. Probe 2026-07-09 measured 9 unique chains inside one 3s window
+    // (docs/probe-report-2026-07-09.json); 1.5 sustained is half that floor
+    // and ~2x the full Phase 1+2 demand (0.8 req/s).
+    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 1.5,
     chainMinUniqueGapMs: parseInt(process.env.CHAIN_MIN_UNIQUE_GAP_MS) || 3000
   },
 
@@ -38,11 +38,16 @@ module.exports = {
 
       // Phase 1 seed (12 by option liquidity; the nightly universe job
       // replaces this with a data-driven ranking — do not curate by hand).
+      // signalMode 'shadow': full engine lifecycle + outcomes recorded, but
+      // never surfaced as live signals — flips to 'live' per-name after the
+      // shadow window validates thresholds (design §5 Phase 1).
+      // securityId resolved from the scrip master at boot (NSE_EQ equity id
+      // is the chain underlying — probe-verified 2026-07-09).
       ...['RELIANCE', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'AXISBANK', 'BAJFINANCE',
           'TATAMOTORS', 'TATASTEEL', 'INFY', 'ADANIENT', 'TCS', 'LT']
         .map((symbol) => ({
           symbol, class: 'STOCK', securityId: null, exchangeSegment: 'NSE_EQ',
-          calendar: 'NSE', cadenceMs: 30000, enabled: false
+          calendar: 'NSE', cadenceMs: 30000, enabled: true, signalMode: 'shadow'
         })),
 
       // Phase 2. Underlyings are futures contracts (securityId resolved at
@@ -172,6 +177,15 @@ module.exports = {
     // Minimum live reward:risk (in premium terms, at trigger time) for a
     // READY setup to become a signal. Below this it stays READY.
     minTriggerRR: parseFloat(process.env.V2_MIN_TRIGGER_RR) || 1.8,
+    // Per-class engine overrides (V2Adapter.engineFor + trigger guard).
+    // Stocks: slower chain cadence (staleness scales via lifecycle cadenceMs)
+    // and a higher R:R floor to pay for wider spreads + gap risk.
+    perClass: {
+      STOCK: {
+        cadenceMs: 30000,
+        minTriggerRR: parseFloat(process.env.V2_STOCK_MIN_TRIGGER_RR) || 2.2
+      }
+    },
     // How long to keep shadowing a non-triggered setup to see if its target
     // or stop would have been hit (missed-setup tracking).
     shadowWindowMs: parseInt(process.env.V2_SHADOW_WINDOW_MS) || 90 * 60000

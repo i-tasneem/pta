@@ -71,6 +71,23 @@ CREATE INDEX IF NOT EXISTS idx_signals_symbol_created ON signals (symbol, create
 CREATE INDEX IF NOT EXISTS idx_signals_strategy        ON signals (strategy);
 CREATE INDEX IF NOT EXISTS idx_signals_state           ON signals (state);
 
+-- Phase 1 (stock options, shadow-first): shadow signals never surface as
+-- live/actionable but keep full lifecycle + outcomes for calibration.
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS shadow BOOLEAN NOT NULL DEFAULT false;
+
+-- Instrument class on snapshots so archive rows are self-describing
+-- (INDEX | STOCK | MCX; NULL on pre-Phase-1 rows = INDEX).
+ALTER TABLE chain_snapshots ADD COLUMN IF NOT EXISTS inst_class TEXT;
+
+-- Earnings blackout feed (design §1.4 gate 2): manually maintained via
+-- scripts/add-earnings.js until an NSE corporate-calendar fetch exists.
+CREATE TABLE IF NOT EXISTS earnings_calendar (
+  symbol      TEXT NOT NULL,
+  event_date  DATE NOT NULL,
+  note        TEXT,
+  PRIMARY KEY (symbol, event_date)
+);
+
 CREATE TABLE IF NOT EXISTS signal_outcomes (
   signal_id     TEXT PRIMARY KEY REFERENCES signals(id) ON DELETE CASCADE,
   outcome       TEXT,                       -- TARGET_HIT | STOPLOSS_HIT | INVALIDATED | EXPIRED

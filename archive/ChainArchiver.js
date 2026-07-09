@@ -31,8 +31,8 @@ class ChainArchiver {
       await this.db.tx(async (client) => {
         const snap = await client.query(
           `INSERT INTO chain_snapshots
-             (symbol, ts, spot, fut, fut_vol, expiry, atm_strike, pcr, max_pain, total_ce_oi, total_pe_oi)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             (symbol, ts, spot, fut, fut_vol, expiry, atm_strike, pcr, max_pain, total_ce_oi, total_pe_oi, inst_class)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            RETURNING id`,
           [
             chain.instrument,
@@ -45,7 +45,8 @@ class ChainArchiver {
             num(chain.pcr),
             maxPain,
             int(chain.totalCeOi),
-            int(chain.totalPeOi)
+            int(chain.totalPeOi),
+            chain.instClass || null
           ]
         );
         const snapshotId = snap.rows[0].id;

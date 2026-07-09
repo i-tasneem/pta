@@ -190,13 +190,23 @@ class PTAServer {
       }, 10 * 60000);
     }
 
+    // Stocks: equity spot (chain underlying, real volume) + FUTSTK basis leg.
+    this.stockPlumbing = await this.discoverStocks();
+    for (const s of this.stockPlumbing.spots) {
+      await this.scanners.addInstrument({ symbol: s.symbol, securityId: s.securityId, exchangeSegment: 'NSE_EQ' });
+    }
+
     const connectProvider = async () => {
       await this.provider.connect();
       await this.provider.subscribeTicks(instruments);
-      if (this.futuresPairs.length > 0) {
-        await this.provider.subscribeFutures(this.futuresPairs);
+      if (this.stockPlumbing.spots.length > 0) {
+        await this.provider.subscribeTicks(this.stockPlumbing.spots);
       }
-      console.log('✓ Provider connected');
+      const futLegs = [...this.futuresPairs, ...this.stockPlumbing.futures];
+      if (futLegs.length > 0) {
+        await this.provider.subscribeFutures(futLegs);
+      }
+      console.log(`✓ Provider connected (${instruments.length} indices, ${this.stockPlumbing.spots.length} stocks)`);
     };
 
     try {
@@ -238,7 +248,7 @@ class PTAServer {
 
     // Seed candle streams from broker history so indicators are warm at
     // boot instead of hours into the session
-    await this.bootstrapHistory(instruments);
+    await this.bootstrapHistory([...instruments, ...this.stockPlumbing.spots]);
 
     // Poll option chains via the budgeted, session-aware scheduler
     this.startChainPolling();
@@ -326,6 +336,54 @@ class PTAServer {
       }));
   }
 
+  // Resolve enabled STOCK-class universe entries: NSE equity id (option-chain
+  // underlying + spot tick, real volume) and nearest FUTSTK (basis leg).
+  // Fills securityId on the universe entries in place, so the chain scheduler
+  // picks them up. A failure leaves stocks dark for this boot — indices are
+  // unaffected — and is logged loudly rather than retried.
+  async discoverStocks() {
+    const stocks = config.instruments.universe.filter(u => u.class === 'STOCK' && u.enabled);
+    if (stocks.length === 0 || typeof this.provider.findStockInstruments !== 'function') {
+      return { spots: [], futures: [] };
+    }
+
+    const cacheKey = `${config.redis.keyPrefix}sys:stocks:map`;
+    try {
+      let map = null;
+      const cached = await this.eventBus.client.get(cacheKey);
+      if (cached) {
+        map = JSON.parse(cached);
+        console.log(`✓ Stock instruments from cache (${Object.keys(map).length} symbols)`);
+      } else {
+        map = await this.provider.findStockInstruments(stocks.map(s => s.symbol));
+        await this.eventBus.client.set(cacheKey, JSON.stringify(map), { EX: 24 * 60 * 60 });
+        console.log('✓ Stock instruments resolved:',
+          Object.entries(map).map(([s, v]) =>
+            `${s}=eq${v.equity && v.equity.securityId}/fut${v.future ? v.future.securityId : '-'}`).join(', '));
+      }
+
+      const spots = [];
+      const futures = [];
+      for (const inst of stocks) {
+        const m = map[inst.symbol];
+        if (!m || !m.equity || !m.equity.securityId) {
+          console.warn(`⚠ Stock unresolved, staying dark: ${inst.symbol}`);
+          continue;
+        }
+        inst.securityId = String(m.equity.securityId);
+        if (m.future && m.future.lotSize) inst.lotSize = m.future.lotSize;
+        spots.push({ symbol: inst.symbol, securityId: inst.securityId, exchangeSegment: 'NSE_EQ' });
+        if (m.future && m.future.securityId) {
+          futures.push({ symbol: inst.symbol, securityId: String(m.future.securityId), exchangeSegment: 'NSE_FNO' });
+        }
+      }
+      return { spots, futures };
+    } catch (err) {
+      console.error('⚠ Stock discovery failed — stocks stay dark until next restart:', err.message);
+      return { spots: [], futures: [] };
+    }
+  }
+
   // Seed an admin from env on first boot so there's always a way in to issue
   // passwords to signups.
   async bootstrapAdmin() {
@@ -358,7 +416,8 @@ class PTAServer {
     for (const inst of instruments) {
       try {
         const candles = await this.provider.getIntradayCandles(
-          inst.securityId, inst.exchangeSegment || 'IDX_I', 'INDEX', fromDate, toDate
+          inst.securityId, inst.exchangeSegment || 'IDX_I',
+          inst.exchangeSegment === 'NSE_EQ' ? 'EQUITY' : 'INDEX', fromDate, toDate
         );
         if (!candles || candles.length === 0) continue;
 
@@ -410,7 +469,8 @@ class PTAServer {
     try {
       await new Promise(r => setTimeout(r, 1200)); // pace vs the rate limit
       const daily = await this.provider.getDailyCandles(
-        inst.securityId, inst.exchangeSegment || 'IDX_I', 'INDEX', fromDate, toDate
+        inst.securityId, inst.exchangeSegment || 'IDX_I',
+        inst.exchangeSegment === 'NSE_EQ' ? 'EQUITY' : 'INDEX', fromDate, toDate
       );
       if (daily && daily.length) {
         await this.seedCandleStream('1d', inst.symbol, daily.slice(-300));
@@ -489,6 +549,7 @@ class PTAServer {
     for (const inst of pollable) {
       this.chainScheduler.add({
         symbol: inst.symbol,
+        class: inst.class || 'INDEX',
         calendar: inst.calendar || 'NSE',
         cadenceMs: inst.cadenceMs || 21000,
         securityId: inst.securityId,
@@ -537,6 +598,7 @@ class PTAServer {
       if (!raw || !raw.data || raw.data.length === 0) return;
 
       const chain = this.normalizer.normalizeOptionChain(raw, inst.symbol);
+      chain.instClass = inst.class || 'INDEX'; // archive rows are self-describing
 
       // Futures flow over the full interval since the last chain poll for
       // this symbol, plus the future's LTP for basis (fut - spot).
