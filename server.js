@@ -615,6 +615,10 @@ class PTAServer {
       // Dhan rejected our expiry (code 811) — the cached date is wrong.
       // Drop it so the next slot refetches instead of failing all day.
       if (/expiry/i.test(detail)) this.chainExpiries.delete(inst.symbol);
+      // Dhan 805 warns "further requests may result in the user being
+      // blocked" — account-level risk. Stand down for a cool-off instead of
+      // hammering; the scheduler catches every instrument up afterwards.
+      if (/805|too many requests/i.test(detail)) this.chainScheduler?.pause(60000);
       console.error(`Chain poll ${inst.symbol}:`, detail);
     }
   }

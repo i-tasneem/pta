@@ -88,6 +88,17 @@ test('budget tokens do not accumulate while everything is closed', () => {
   assert.strictEqual(sched.pick(61500), null, 'no burst from hoarded weekend tokens');
 });
 
+test('pause() stops all picking and resume does not burst', () => {
+  const sched = new ChainScheduler({ budgetRps: 5, isOpen: alwaysOpen, now: () => 0 });
+  sched.add({ symbol: 'A', cadenceMs: 1000 });
+  assert.ok(sched.pick(0), 'normal pick before pause');
+
+  sched.pause(60000); // broker 805 — cool off
+  assert.strictEqual(sched.pick(30000), null, 'paused mid-window');
+  assert.strictEqual(sched.pick(60001), null, 'tokens drained — no burst at resume');
+  assert.ok(sched.pick(61000), 'resumes after refill');
+});
+
 test('MarketCalendar: NSE and MCX windows in IST, weekends closed', () => {
   const istTs = (y, mo, d, h, mi) => Date.UTC(y, mo, d, h, mi) - 330 * 60000;
   // Wed 2026-07-08

@@ -10,12 +10,14 @@ module.exports = {
     restUrl: 'https://api.dhan.co',
     rateLimit: 25,
     tokenRefreshInterval: 20 * 60 * 60 * 1000,
-    // Chain-poll budget (requests/sec) fed to ChainScheduler. Dhan's limits:
-    // Data-API bucket 5 req/s, plus 1 request per UNIQUE underlying+expiry
-    // per 3s. Probe 2026-07-09 measured 9 unique chains inside one 3s window
-    // (docs/probe-report-2026-07-09.json); 1.5 sustained is half that floor
-    // and ~2x the full Phase 1+2 demand (0.8 req/s).
-    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 1.5,
+    // Chain-poll budget (requests/sec) fed to ChainScheduler. Hard-won
+    // numbers: the probe's one-off burst passed 9 unique chains in 3s, but
+    // SUSTAINED 1.5 req/s drew Dhan 805s ("user may be blocked") within a
+    // minute of the 2026-07-09 deploy — Dhan's sustained ceiling is tighter
+    // than its burst window. 0.5 is the working point (17 instruments run
+    // ~1.3x their cadence targets); raise cautiously via env while watching
+    // for 805s — the scheduler auto-pauses 60s when one appears.
+    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 0.5,
     chainMinUniqueGapMs: parseInt(process.env.CHAIN_MIN_UNIQUE_GAP_MS) || 3000
   },
 
@@ -43,8 +45,10 @@ module.exports = {
       // shadow window validates thresholds (design §5 Phase 1).
       // securityId resolved from the scrip master at boot (NSE_EQ equity id
       // is the chain underlying — probe-verified 2026-07-09).
+      // (TATAMOTORS demerged 2025 — successor TMPV's option liquidity is
+      // unproven, so KOTAKBANK holds the 12th slot until the ranking job.)
       ...['RELIANCE', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'AXISBANK', 'BAJFINANCE',
-          'TATAMOTORS', 'TATASTEEL', 'INFY', 'ADANIENT', 'TCS', 'LT']
+          'KOTAKBANK', 'TATASTEEL', 'INFY', 'ADANIENT', 'TCS', 'LT']
         .map((symbol) => ({
           symbol, class: 'STOCK', securityId: null, exchangeSegment: 'NSE_EQ',
           calendar: 'NSE', cadenceMs: 30000, enabled: true, signalMode: 'shadow'

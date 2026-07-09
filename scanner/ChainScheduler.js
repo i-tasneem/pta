@@ -29,6 +29,19 @@ class ChainScheduler {
     this.tokens = this.capacity; // allow one immediate fetch at boot
     this.lastRefill = this.now();
     this.timer = null;
+    this.pausedUntil = 0;
+  }
+
+  // Circuit breaker: the host calls this on a broker rate-limit response
+  // (Dhan 805 threatens account-level blocking). All polling stops for the
+  // cool-down and the bucket drains so resume doesn't burst.
+  pause(ms) {
+    const until = this.now() + ms;
+    if (until > this.pausedUntil) {
+      this.pausedUntil = until;
+      this.tokens = 0;
+      console.warn(`ChainScheduler paused ${Math.round(ms / 1000)}s (broker rate limit)`);
+    }
   }
 
   add(entry) {
@@ -48,6 +61,7 @@ class ChainScheduler {
   // Pick the instrument to fetch now, or null. Consumes a budget token and
   // stamps lastFetch, so the caller MUST perform the fetch it was given.
   pick(nowTs) {
+    if (nowTs < this.pausedUntil) return null;
     this._refill(nowTs);
     // Epsilon absorbs float drift from incremental refills so a token due
     // exactly now is spendable now, not one slot late.
@@ -75,7 +89,9 @@ class ChainScheduler {
   }
 
   _refill(nowTs) {
-    const elapsed = Math.max(0, nowTs - this.lastRefill);
+    // Tokens never accrue across a paused span — resume starts from zero.
+    const from = Math.max(this.lastRefill, this.pausedUntil);
+    const elapsed = Math.max(0, nowTs - from);
     this.lastRefill = nowTs;
     this.tokens = Math.min(this.capacity, this.tokens + (elapsed / 1000) * this.budgetRps);
   }
