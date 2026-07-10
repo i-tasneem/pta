@@ -65,6 +65,20 @@ class TokenManager {
   }
 
   async generateToken(allowWait = true) {
+    // Hard generation budget: 3 per rolling hour (the scheduled refresh needs
+    // 1/day). On 2026-07-10 a dead Data-API subscription made every fresh
+    // token look rejected, and the auth-error path regenerated 24 tokens in
+    // ~50 min — the exact TOTP-hammering pattern that once got TOTP disabled
+    // on the account. When the budget is gone the problem is NOT the token;
+    // refuse loudly instead of hammering Dhan auth.
+    if (allowWait) {
+      const now = Date.now();
+      this.genTimes = (this.genTimes || []).filter((t) => now - t < 60 * 60 * 1000);
+      if (this.genTimes.length >= 3) {
+        throw new Error('Token generation budget exhausted (3/hr) — auth rejections are not token-related; investigate (subscription? account block?) instead of regenerating');
+      }
+      this.genTimes.push(now);
+    }
     const { otp } = TOTP.generate(this.totpSecret);
     // validateStatus: Dhan reports the one-token-per-2-minutes limit as an
     // error status; with default axios behavior that threw before the wait

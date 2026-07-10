@@ -123,10 +123,16 @@ class PTAServer {
       this.tokenManager.onToken = (t) => { if (this.provider) this.provider.accessToken = t; };
       // Single-flight 401 recovery: concurrent failures share one regeneration.
       this.provider.onAuthError = () => {
-        if (!this._tokenRecovery) {
-          this._tokenRecovery = this.tokenManager.invalidate()
-            .finally(() => { this._tokenRecovery = null; });
+        if (this._tokenRecovery) return this._tokenRecovery;
+        // Cooldown: if a fresh token didn't cure the 401s ten minutes ago,
+        // the account itself is the problem (e.g. Data APIs unsubscribed) —
+        // regenerating again only burns TOTP attempts.
+        if (this._lastTokenRecoveryAt && Date.now() - this._lastTokenRecoveryAt < 10 * 60000) {
+          return Promise.resolve(null);
         }
+        this._lastTokenRecoveryAt = Date.now();
+        this._tokenRecovery = this.tokenManager.invalidate()
+          .finally(() => { this._tokenRecovery = null; });
         return this._tokenRecovery;
       };
     }
@@ -695,6 +701,12 @@ class PTAServer {
       // blocked" — account-level risk. Stand down for a cool-off instead of
       // hammering; the scheduler catches every instrument up afterwards.
       if (/805|too many requests/i.test(detail)) this.chainScheduler?.pause(60000);
+      // Dhan 806 = the account's Data-API subscription is inactive. No amount
+      // of retrying fixes that — pause long and say exactly what to do.
+      if (/806|not subscribed/i.test(detail)) {
+        this.chainScheduler?.pause(15 * 60000);
+        console.error('CRITICAL: Dhan Data APIs not subscribed (806) — renew the Data API plan in the Dhan console; polling paused 15min');
+      }
       console.error(`Chain poll ${inst.symbol}:`, detail);
     }
   }
