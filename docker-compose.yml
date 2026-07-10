@@ -50,6 +50,21 @@ services:
       AUTH_SECRET: ${AUTH_SECRET}
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      # Tuning knobs (config/pta.config.js reads these; empty = code default).
+      # Compose does NOT forward .env into containers automatically — every
+      # knob must be mapped here or it silently never reaches the app
+      # (discovered 2026-07-10: all "env throttles" were no-ops).
+      CHAIN_BUDGET_RPS: ${CHAIN_BUDGET_RPS:-}
+      CHAIN_MIN_UNIQUE_GAP_MS: ${CHAIN_MIN_UNIQUE_GAP_MS:-}
+      V2_FORMING_SCORE: ${V2_FORMING_SCORE:-}
+      V2_STRENGTHENING_SCORE: ${V2_STRENGTHENING_SCORE:-}
+      V2_READY_SCORE: ${V2_READY_SCORE:-}
+      V2_MISS_TOLERANCE: ${V2_MISS_TOLERANCE:-}
+      V2_STOP_BUFFER_PCT: ${V2_STOP_BUFFER_PCT:-}
+      V2_STOP_VIOLATION_TOL: ${V2_STOP_VIOLATION_TOL:-}
+      V2_MIN_TRIGGER_RR: ${V2_MIN_TRIGGER_RR:-}
+      V2_STOCK_MIN_TRIGGER_RR: ${V2_STOCK_MIN_TRIGGER_RR:-}
+      V2_MCX_MIN_TRIGGER_RR: ${V2_MCX_MIN_TRIGGER_RR:-}
     ports:
       - "3000:3000"   # OCI LB backend target
 

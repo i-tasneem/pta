@@ -11,13 +11,14 @@ module.exports = {
     rateLimit: 25,
     tokenRefreshInterval: 20 * 60 * 60 * 1000,
     // Chain-poll budget (requests/sec) fed to ChainScheduler. Hard-won
-    // numbers (2026-07-09): the probe's one-off burst passed 9 unique chains
-    // in 3s, but sustained sending drew Dhan 805s ("user may be blocked").
-    // Measured over a 40-min window at ~41 attempts/min: ~10/min rejected →
-    // acceptance ceiling ≈ 30/min (0.5/s) sustained. 0.45 runs 10% under
-    // that; the scheduler also auto-pauses 60s on any 805 (circuit breaker).
-    // Raise only with a long clean-log soak, never on burst evidence.
-    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 0.45,
+    // numbers: burst probes are misleading (9 uniques passed in one 3s
+    // window), and even 0.45 sustained tripped 805s in live oscillation on
+    // 2026-07-10. The only rate with a long clean history is ~0.286 (weeks);
+    // 0.30 is the default. The scheduler pauses 60s on any 805 and resumes
+    // at half rate for 10min. Raise only via CHAIN_BUDGET_RPS after a
+    // multi-session clean soak — and remember the knob must ALSO be mapped
+    // in docker-compose.yml or it never reaches the container.
+    chainBudgetRps: parseFloat(process.env.CHAIN_BUDGET_RPS) || 0.30,
     chainMinUniqueGapMs: parseInt(process.env.CHAIN_MIN_UNIQUE_GAP_MS) || 3000
   },
 
