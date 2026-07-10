@@ -40,7 +40,11 @@ class ChainScheduler {
     if (until > this.pausedUntil) {
       this.pausedUntil = until;
       this.tokens = 0;
-      console.warn(`ChainScheduler paused ${Math.round(ms / 1000)}s (broker rate limit)`);
+      // Resuming at full rate into the backlog the pause created just trips
+      // the limiter again (observed 2026-07-10: pause/resume oscillation).
+      // Run at half budget for a recovery window after every pause.
+      this.recoveryUntil = until + 10 * 60000;
+      console.warn(`ChainScheduler paused ${Math.round(ms / 1000)}s (broker rate limit); half-rate recovery for 10min after`);
     }
   }
 
@@ -93,7 +97,8 @@ class ChainScheduler {
     const from = Math.max(this.lastRefill, this.pausedUntil);
     const elapsed = Math.max(0, nowTs - from);
     this.lastRefill = nowTs;
-    this.tokens = Math.min(this.capacity, this.tokens + (elapsed / 1000) * this.budgetRps);
+    const rate = nowTs < (this.recoveryUntil || 0) ? this.budgetRps / 2 : this.budgetRps;
+    this.tokens = Math.min(this.capacity, this.tokens + (elapsed / 1000) * rate);
   }
 
   // fetchFn(entry) is fire-and-forget per slot; its own error handling owns

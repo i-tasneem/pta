@@ -99,6 +99,21 @@ test('pause() stops all picking and resume does not burst', () => {
   assert.ok(sched.pick(61000), 'resumes after refill');
 });
 
+test('post-pause recovery runs at half budget, then returns to full', () => {
+  const sched = new ChainScheduler({ budgetRps: 1 / 3.5, isOpen: alwaysOpen, now: () => 0 });
+  sched.add({ symbol: 'A', cadenceMs: 1000 });
+  sched.pause(60000); // recovery window: 60s..660s at half rate (1 token per 7s)
+
+  assert.strictEqual(sched.pick(63500), null, 'full-rate refill would allow this; half-rate must not');
+  assert.ok(sched.pick(67100), 'half-rate token arrives ~7s after resume');
+
+  // Past recoveryUntil (660s) the full rate is back: 3.5s per token again.
+  const t1 = 661000;
+  assert.ok(sched.pick(t1), 'full budget after recovery window');
+  assert.strictEqual(sched.pick(t1 + 3000), null, 'floor still enforced');
+  assert.ok(sched.pick(t1 + 3600), 'full-rate spacing (~3.5s) restored');
+});
+
 test('MarketCalendar: NSE and MCX windows in IST, weekends closed', () => {
   const istTs = (y, mo, d, h, mi) => Date.UTC(y, mo, d, h, mi) - 330 * 60000;
   // Wed 2026-07-08
