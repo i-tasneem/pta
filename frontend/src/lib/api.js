@@ -17,5 +17,6 @@ export const api = {
   performance: () => get('/api/performance'),
   opportunities: (limit = 10) => get(`/api/opportunities?limit=${limit}`),
   v2Setups: () => get('/api/v2/setups'),
-  v2Signals: (limit = 100) => get(`/api/v2/signals?limit=${limit}`)
+  v2Signals: (limit = 100, shadow = false) => get(`/api/v2/signals?limit=${limit}${shadow ? '&shadow=1' : ''}`),
+  universe: () => get('/api/universe')
 };

@@ -509,6 +509,7 @@ class V2Adapter {
       reasons: h.reasons, thesis: h.thesis,
       entryRef: h.entryRef, structuralStop: h.structuralStop, structuralTarget: h.structuralTarget,
       exitLevels, plan, ladder, updatedAt: h.updatedAt,
+      instClass: this.classOf(h.instrument),
       exec: this.execInfo(h.instrument), shadow: this.isShadow(h.instrument)
     };
   }

@@ -293,6 +293,21 @@ class ExpressGateway {
       }
     });
 
+    // Instrument universe (class/mode/execution contract) — lets the
+    // frontend segregate Indices / Stocks / Commodities without hardcoding.
+    this.app.get('/api/universe', (req, res) => {
+      const universe = (this.config.instruments.universe || []).map((u) => ({
+        symbol: u.symbol,
+        class: u.class || 'INDEX',
+        enabled: !!u.enabled,
+        signalMode: u.signalMode || 'live',
+        calendar: u.calendar || 'NSE',
+        execContract: u.execContract || null,
+        lotSize: u.execLotSize || u.lotSize || null
+      }));
+      res.json({ universe });
+    });
+
     // Screener: one intelligence card per tracked instrument
     this.app.get('/api/screener', async (req, res) => {
       const symbols = this.config.instruments.indices.map(i => i.symbol);

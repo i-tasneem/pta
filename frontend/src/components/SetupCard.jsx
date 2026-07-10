@@ -1,6 +1,7 @@
 import React from 'react';
 import { Card, Badge } from './ui';
 import { fmtPrice } from '../lib/format';
+import { CLASS_BADGE } from './ClassTabs';
 
 export const ARCHETYPE_LABELS = {
   WALL_CAPITULATION_BREAK: 'Wall Capitulation Break',
@@ -45,14 +46,28 @@ export default function SetupCard({ s }) {
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-bold text-slate-100">{s.instrument}</span>
+            {s.instClass && s.instClass !== 'INDEX' && CLASS_BADGE[s.instClass] && (
+              <Badge cls={CLASS_BADGE[s.instClass].cls}>{CLASS_BADGE[s.instClass].label}</Badge>
+            )}
             <Badge cls={isCE
               ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
               : 'bg-rose-500/20 text-rose-300 border-rose-500/40'}>
               {isCE ? '▲ CALL' : '▼ PUT'}
             </Badge>
             <Badge cls="bg-slate-500/15 text-slate-300 border-slate-500/30">{s.stage}</Badge>
+            {s.shadow && (
+              <Badge cls="bg-amber-500/15 text-amber-400 border-amber-500/30">SHADOW</Badge>
+            )}
           </div>
-          <div className="text-xs text-slate-400 mt-1">{ARCHETYPE_LABELS[s.archetype] || s.archetype}</div>
+          <div className="text-xs text-slate-400 mt-1">
+            {ARCHETYPE_LABELS[s.archetype] || s.archetype}
+            {s.exec && s.exec.contract && s.exec.contract !== s.instrument && (
+              <span className="text-amber-400/80"> · trade {s.exec.contract}{s.exec.lotSize ? ` (lot ${s.exec.lotSize})` : ''}</span>
+            )}
+            {s.exec && s.exec.contract === s.instrument && s.exec.lotSize && (
+              <span className="text-slate-500"> · lot {s.exec.lotSize}</span>
+            )}
+          </div>
         </div>
         <div className="text-right">
           <div className="text-2xl font-bold text-sky-300">{Math.round(s.score)}</div>

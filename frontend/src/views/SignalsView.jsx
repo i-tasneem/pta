@@ -8,14 +8,18 @@ const ACTIVE_STAGES = ['TRIGGERED', 'ACTIVE'];
 const CLOSED_STATES = ['TARGET_HIT', 'STOPLOSS_HIT', 'INVALIDATED', 'EXPIRED'];
 
 // Triggered/active trades (live from V2 setups) + closed history (from Postgres).
-export default function SignalsView({ setups = [] }) {
+// `setups` arrives pre-filtered by class from App; the closed table applies the
+// same class filter itself (its rows come from a different source). Shadow
+// rows (stock/MCX validation classes) are included so the class tabs show
+// them, marked with a SHADOW badge.
+export default function SignalsView({ setups = [], klass = 'ALL', classOf = () => 'INDEX' }) {
   const [tab, setTab] = useState('active');
   const [closed, setClosed] = useState([]);
 
   useEffect(() => {
     if (tab !== 'closed') return;
     let cancelled = false;
-    const load = () => api.v2Signals(100)
+    const load = () => api.v2Signals(200, true)
       .then((d) => { if (!cancelled) setClosed((d.signals || []).filter((s) => CLOSED_STATES.includes(s.state))); })
       .catch(() => {});
     load();
@@ -26,6 +30,10 @@ export default function SignalsView({ setups = [] }) {
   const active = setups
     .filter((s) => ACTIVE_STAGES.includes(s.stage))
     .sort((a, b) => b.score - a.score);
+
+  const closedFiltered = klass === 'ALL'
+    ? closed
+    : closed.filter((s) => classOf(s.symbol, null) === klass);
 
   return (
     <div>
@@ -52,7 +60,7 @@ export default function SignalsView({ setups = [] }) {
           </div>
         )
       ) : (
-        closed.length === 0 ? (
+        closedFiltered.length === 0 ? (
           <Empty title="No closed signals yet" hint="Triggered signals show their outcome here once they exit" />
         ) : (
           <Card className="p-0 overflow-x-auto">
@@ -69,12 +77,17 @@ export default function SignalsView({ setups = [] }) {
                 </tr>
               </thead>
               <tbody>
-                {closed.map((s) => {
+                {closedFiltered.map((s) => {
                   const win = s.outcome === 'TARGET_HIT' || (s.pnl || 0) > 0;
                   return (
                     <tr key={s.id} className="border-b border-slate-800/50">
                       <td className="py-2 px-3 text-slate-500 whitespace-nowrap">{fmtTime(new Date(s.created_at).getTime())}</td>
-                      <td className="py-2 px-3 font-semibold text-slate-200">{s.symbol}</td>
+                      <td className="py-2 px-3 font-semibold text-slate-200">
+                        {s.symbol}
+                        {s.shadow && (
+                          <Badge cls="ml-1.5 bg-amber-500/15 text-amber-400 border-amber-500/30">SHADOW</Badge>
+                        )}
+                      </td>
                       <td className="py-2 px-3 text-slate-400">{ARCHETYPE_LABELS[s.strategy] || s.strategy}</td>
                       <td className="py-2 px-3">
                         <Badge cls={s.direction === 'CE'

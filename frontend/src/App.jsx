@@ -8,6 +8,7 @@ import SignalsView from './views/SignalsView';
 import AnalyticsView from './views/AnalyticsView';
 import ChainView from './views/ChainView';
 import HistoryView from './views/HistoryView';
+import ClassTabs from './components/ClassTabs';
 
 const WS_URL =
   window.location.protocol === 'https:'
@@ -29,6 +30,9 @@ export default function App() {
   const [v2setups, setV2Setups] = useState([]);
   const [selected, setSelected] = useState('NIFTY');
   const [wsConnected, setWsConnected] = useState(false);
+  // Instrument-class segmentation (Indices / Stocks / Commodities)
+  const [klass, setKlass] = useState('ALL');
+  const [classBySymbol, setClassBySymbol] = useState({});
   const wsRef = useRef(null);
 
   // auth: 'checking' | 'required' | 'ready'  (ready = authed or auth disabled)
@@ -67,6 +71,15 @@ export default function App() {
       };
     };
     connect();
+
+    // Universe (symbol -> class) rarely changes; fetch once per session.
+    api.universe()
+      .then((d) => {
+        const map = {};
+        for (const u of d.universe || []) map[u.symbol] = u.class;
+        setClassBySymbol(map);
+      })
+      .catch(() => {});
 
     fetchData();
     const interval = setInterval(fetchData, 5000);
@@ -132,6 +145,16 @@ export default function App() {
 
   const triggeredCount = v2setups.filter(s => s.stage === 'TRIGGERED' || s.stage === 'ACTIVE').length;
 
+  const classOf = (symbol, row) => (row && row.instClass) || classBySymbol[symbol] || 'INDEX';
+  const classCounts = v2setups.reduce((acc, s) => {
+    const c = classOf(s.instrument, s);
+    acc[c] = (acc[c] || 0) + 1;
+    return acc;
+  }, {});
+  const filterByClass = (rows, symbolOf) => klass === 'ALL'
+    ? rows
+    : rows.filter((r) => classOf(symbolOf(r), r) === klass);
+
   if (authState === 'checking') {
     return <div className="min-h-screen bg-slate-950 text-slate-500 flex items-center justify-center text-sm">Loading…</div>;
   }
@@ -190,9 +213,17 @@ export default function App() {
 
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 py-4 pb-20 md:pb-6">
+        {(view === 'setups' || view === 'signals') && (
+          <ClassTabs value={klass} onChange={setKlass} counts={classCounts} />
+        )}
         {view === 'scanner' && <ScannerView instruments={instruments} onAnalyze={goAnalyze} />}
-        {view === 'setups' && <SetupsView setups={v2setups} />}
-        {view === 'signals' && <SignalsView setups={v2setups} />}
+        {view === 'setups' && (
+          <SetupsView setups={filterByClass(v2setups, (s) => s.instrument)} />
+        )}
+        {view === 'signals' && (
+          <SignalsView setups={filterByClass(v2setups, (s) => s.instrument)}
+            klass={klass} classOf={classOf} />
+        )}
         {view === 'analytics' && (
           <AnalyticsView instruments={instruments} selected={selected} onSelect={setSelected} />
         )}
