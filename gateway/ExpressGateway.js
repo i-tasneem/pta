@@ -310,7 +310,9 @@ class ExpressGateway {
 
     // Screener: one intelligence card per tracked instrument
     this.app.get('/api/screener', async (req, res) => {
-      const symbols = this.config.instruments.indices.map(i => i.symbol);
+      const symbols = this.config.instruments.universe
+        .filter((i) => i.enabled)
+        .map((i) => i.symbol);
       const instruments = await Promise.all(
         symbols.map(symbol => this.buildInstrumentCard(symbol))
       );

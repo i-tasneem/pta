@@ -50,7 +50,8 @@ class Backtester {
     const ids = snaps.rows.map((r) => r.id);
     const strikes = await this.db.query(
       `SELECT snapshot_id, strike, ce_oi, pe_oi, ce_vol, pe_vol,
-              ce_ltp, pe_ltp, ce_iv, pe_iv, ce_delta, pe_delta
+              ce_ltp, pe_ltp, ce_bid, ce_ask, pe_bid, pe_ask,
+              ce_iv, pe_iv, ce_delta, pe_delta
          FROM chain_strikes
         WHERE snapshot_id = ANY($1::bigint[])
         ORDER BY strike ASC`,
@@ -77,15 +78,15 @@ class Backtester {
       expiry: s.expiry || '',
       strikes: (byId.get(s.id) || []).map((k) => ({
         strike: Number(k.strike),
-        ce: { ltp: Number(k.ce_ltp) || 0, oi: Number(k.ce_oi) || 0, volume: Number(k.ce_vol) || 0, iv: Number(k.ce_iv) || 0, delta: Number(k.ce_delta) || 0 },
-        pe: { ltp: Number(k.pe_ltp) || 0, oi: Number(k.pe_oi) || 0, volume: Number(k.pe_vol) || 0, iv: Number(k.pe_iv) || 0, delta: Number(k.pe_delta) || 0 }
+        ce: { ltp: Number(k.ce_ltp) || 0, bid: Number(k.ce_bid) || 0, ask: Number(k.ce_ask) || 0, oi: Number(k.ce_oi) || 0, volume: Number(k.ce_vol) || 0, iv: Number(k.ce_iv) || 0, delta: Number(k.ce_delta) || 0 },
+        pe: { ltp: Number(k.pe_ltp) || 0, bid: Number(k.pe_bid) || 0, ask: Number(k.pe_ask) || 0, oi: Number(k.pe_oi) || 0, volume: Number(k.pe_vol) || 0, iv: Number(k.pe_iv) || 0, delta: Number(k.pe_delta) || 0 }
       }))
     }));
   }
 
   // Pure replay — deterministic, no DB. `snapshots` are in engine shape.
   runSnapshots(instrument, snapshots, opts = {}) {
-    const eng = new engine.SetupEngine(instrument, opts.lifecycle || {});
+    const eng = new engine.SetupEngine(instrument, Backtester.engineOptions(opts));
     const futWin = new engine.RollingWindow(120);
     const open = new Map();
     const trades = [];
@@ -120,7 +121,8 @@ class Backtester {
       }
     }
 
-    return { trades, metrics: Backtester.computeMetrics(trades) };
+    const openTrades = Backtester.markOpen(open, snapshots.at(-1));
+    return { trades, openTrades, metrics: { ...Backtester.computeMetrics(trades), unresolved: openTrades.length } };
   }
 
   // Forward-simulated exits: book on TRIGGERED, then walk the spot path and close
@@ -129,7 +131,7 @@ class Backtester {
   // otherwise they are the raw structural wall levels. Both modes share this exit
   // walk, so the only difference is WHERE the levels sit — a fair before/after.
   simulateExits(instrument, snapshots, opts = {}, useConfluence = false) {
-    const eng = new engine.SetupEngine(instrument, opts.lifecycle || {});
+    const eng = new engine.SetupEngine(instrument, Backtester.engineOptions(opts));
     const futWin = new engine.RollingWindow(120);
     const agg5 = new SpotCandles(300000);
     const agg15 = new SpotCandles(900000);
@@ -187,7 +189,8 @@ class Backtester {
       }
     }
 
-    return { trades, metrics: Backtester.computeMetrics(trades) };
+    const openTrades = Backtester.markOpen(open, snapshots.at(-1));
+    return { trades, openTrades, metrics: { ...Backtester.computeMetrics(trades), unresolved: openTrades.length } };
   }
 
   // Before/after exit comparison on the same snapshot stream.
@@ -221,6 +224,28 @@ class Backtester {
       profitFactor: grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? Infinity : 0),
       maxDrawdownR: maxDD
     };
+  }
+
+  static engineOptions(opts = {}) {
+    const lifecycle = { ...(opts.lifecycle || {}) };
+    if (opts.strategy && opts.strategy !== 'ALL') {
+      lifecycle.registry = engine.ALL_ARCHETYPES.filter((a) => a.name === opts.strategy);
+      if (lifecycle.registry.length === 0) throw new Error(`unknown strategy: ${opts.strategy}`);
+    }
+    return lifecycle;
+  }
+
+  static markOpen(open, lastSnapshot) {
+    if (!lastSnapshot) return [];
+    return [...open].map(([id, o]) => {
+      const riskU = Math.abs(o.entry - o.stop) || 1;
+      const move = o.direction === 'CE' ? lastSnapshot.spot - o.entry : o.entry - lastSnapshot.spot;
+      return {
+        id, archetype: o.archetype, direction: o.direction, outcome: 'OPEN_AT_END',
+        entry: o.entry, mark: lastSnapshot.spot, unrealizedR: move / riskU,
+        durationMs: lastSnapshot.ts - o.ts
+      };
+    });
   }
 
   async runFromDb(symbol, fromISO, toISO, opts = {}) {

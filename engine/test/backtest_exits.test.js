@@ -49,7 +49,7 @@ test('backtester compareExits returns well-formed before/after metric shapes', (
   const cmp = bt.compareExits('NIFTY', snapshots, OPTS);
   for (const side of [cmp.before, cmp.after]) {
     assert.ok(side.metrics, 'metrics present');
-    for (const k of ['trades', 'wins', 'losses', 'winRate', 'avgR', 'expectancy', 'profitFactor', 'maxDrawdownR']) {
+    for (const k of ['trades', 'wins', 'losses', 'winRate', 'avgR', 'expectancy', 'profitFactor', 'maxDrawdownR', 'unresolved']) {
       assert.ok(k in side.metrics, `metric ${k}`);
     }
     assert.ok(side.metrics.winRate >= 0 && side.metrics.winRate <= 1, 'winRate in [0,1]');
@@ -81,4 +81,10 @@ test('runSnapshots (engine-transition harness) is unchanged and still runs', () 
   const bt = new Backtester(null);
   const res = bt.runSnapshots('NIFTY', snapshots, OPTS);
   assert.ok(res.metrics && 'trades' in res.metrics, 'legacy harness intact');
+  assert.ok(Array.isArray(res.openTrades), 'unresolved trades are explicit');
+});
+
+test('backtester applies strategy filter instead of silently ignoring it', () => {
+  const bt = new Backtester(null);
+  assert.throws(() => bt.runSnapshots('NIFTY', snapshots, { ...OPTS, strategy: 'DOES_NOT_EXIST' }), /unknown strategy/);
 });

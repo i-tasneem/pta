@@ -64,21 +64,21 @@ class StockGuards {
         const raw = await this.eventBus.client.get(redisKey);
         if (raw) {
           const j = JSON.parse(raw);
-          this.banCache = { day, set: new Set(j.symbols || []) };
-          console.warn(`Ban list fetch failed (${err.message}); using cached list from ${j.day}`);
-          return this.banCache.set;
+          if (j.day === day) {
+            this.banCache = { day, set: new Set(j.symbols || []) };
+            console.warn(`Ban list fetch failed (${err.message}); using same-day cached list`);
+            return this.banCache.set;
+          }
         }
       } catch { /* fall through */ }
-      console.warn(`Ban list fetch failed (${err.message}); no cached list — treating none as banned`);
-      this.banCache = { day, set: new Set() };
-      return this.banCache.set;
+      throw new Error(`MWPL data unavailable: ${err.message}`);
     }
   }
 
   // Blocked when today falls in [event-2, event+1] for any earnings event,
   // i.e. any event_date in [today-1, today+2].
   async inEarningsBlackout(symbol) {
-    if (!this.db || !this.db.enabled) return false;
+    if (!this.db || !this.db.enabled) throw new Error('earnings calendar unavailable: database disabled');
     const day = StockGuards.istDay();
     const key = `${symbol}|${day}`;
     if (this.earningsCache.has(key)) return this.earningsCache.get(key);
@@ -93,7 +93,7 @@ class StockGuards {
       );
       blocked = r.rows.length > 0;
     } catch (err) {
-      console.warn(`Earnings check ${symbol}:`, err.message);
+      throw new Error(`earnings calendar unavailable: ${err.message}`);
     }
     if (this.earningsCache.size > 500) this.earningsCache.clear();
     this.earningsCache.set(key, blocked);
@@ -102,8 +102,18 @@ class StockGuards {
 
   // Single decision for the chain-poll hot path; null = no veto.
   async vetoReason(symbol) {
-    if ((await this.banSet()).has(symbol)) return 'MWPL_BAN';
-    if (await this.inEarningsBlackout(symbol)) return 'EARNINGS_BLACKOUT';
+    try {
+      if ((await this.banSet()).has(symbol)) return 'MWPL_BAN';
+    } catch (err) {
+      console.warn(`Stock guard ${symbol}:`, err.message);
+      return 'MWPL_DATA_UNAVAILABLE';
+    }
+    try {
+      if (await this.inEarningsBlackout(symbol)) return 'EARNINGS_BLACKOUT';
+    } catch (err) {
+      console.warn(`Stock guard ${symbol}:`, err.message);
+      return 'EARNINGS_DATA_UNAVAILABLE';
+    }
     return null;
   }
 }

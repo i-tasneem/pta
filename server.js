@@ -285,7 +285,9 @@ class PTAServer {
     const port = process.env.PORT || 3000;
     const server = expressGateway.listen(port);
 
-    this.wsGateway = new WebSocketGateway(server, this.eventBus, this.schema, config);
+    this.wsGateway = new WebSocketGateway(
+      server, this.eventBus, this.schema, config, this.auth, !!(this.db && this.db.enabled)
+    );
     await this.wsGateway.initialize();
     this.wsGateway.startEventStreaming();
 
@@ -726,6 +728,7 @@ class PTAServer {
     this.signalLifecycle?.stop();
     this.notification?.stop();
     this.archiver?.stop();
+    await this.wsGateway?.stop().catch(() => {});
     this.tokenManager?.stop();
     await this.provider?.disconnect();
     await this.eventBus?.disconnect();

@@ -41,10 +41,9 @@ test('stock trigger gate: wide spread is blocked, tight spread passes', () => {
   assert.strictEqual(tight.ok, true);
 });
 
-test('stock trigger gate: missing quote data does not block', () => {
-  // fail-open on data gaps (same philosophy as the R:R guard)
-  assert.strictEqual(V2Adapter.stockTriggerViable({ delta: 0.5 }, null).ok, true);
-  assert.strictEqual(V2Adapter.stockTriggerViable({ delta: 0.5 }, { bid: 0, ask: 0 }).ok, true);
+test('stock trigger gate: missing quote data blocks entry', () => {
+  assert.strictEqual(V2Adapter.stockTriggerViable({ delta: 0.5 }, null).ok, false);
+  assert.strictEqual(V2Adapter.stockTriggerViable({ delta: 0.5 }, { bid: 0, ask: 0 }).ok, false);
 });
 
 test('PE pins pass the delta floor on absolute value', () => {

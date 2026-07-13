@@ -1,12 +1,27 @@
 // providers/EventNormalizer.js
 class EventNormalizer {
-  constructor(redisSchema, eventBus) {
+  constructor(redisSchema, eventBus, options = {}) {
     this.schema = redisSchema;
     this.eventBus = eventBus;
+    this.tickTtlSeconds = options.tickTtlSeconds || 30;
+    this.chainTtlSeconds = options.chainTtlSeconds || 300;
+  }
+
+  static timestamp(value, fallback = Date.now()) {
+    if (value instanceof Date) return value.getTime();
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n < 1e12 ? n * 1000 : n;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
   }
 
   // Normalize Dhan tick to unified format
   normalizeTick(rawTick) {
+    const receivedTs = Date.now();
+    const exchangeTs = EventNormalizer.timestamp(
+      rawTick.exchangeTimestamp ?? rawTick.timestamp ?? rawTick.lastTradeTime,
+      receivedTs
+    );
     const num = v => {
       const n = parseFloat(v);
       return Number.isFinite(n) ? n : 0;
@@ -27,12 +42,19 @@ class EventNormalizer {
       open: num(rawTick.dayOpen ?? rawTick.open),
       prevClose: num(rawTick.prevClose ?? rawTick.previousClose),
       futLtp: num(rawTick.futLtp), // paired future's last price (basis input)
-      timestamp: Date.now()
+      timestamp: exchangeTs,
+      exchangeTs,
+      receivedTs
     };
   }
 
   // Normalize Dhan option chain to unified format
   normalizeOptionChain(rawChain, instrument) {
+    const receivedTs = Date.now();
+    const exchangeTs = EventNormalizer.timestamp(
+      rawChain.exchangeTimestamp ?? rawChain.timestamp,
+      receivedTs
+    );
     const strikes = [];
     let totalCeOi = 0;
     let totalPeOi = 0;
@@ -91,7 +113,9 @@ class EventNormalizer {
       totalCeOi,
       totalPeOi,
       expiry: rawChain.expiryDate || '',
-      timestamp: Date.now()
+      timestamp: exchangeTs,
+      exchangeTs,
+      receivedTs
     };
   }
 
@@ -111,9 +135,11 @@ class EventNormalizer {
       low: tick.low,
       open: tick.open,
       prevClose: tick.prevClose,
-      timestamp: tick.timestamp
+      timestamp: tick.timestamp,
+      exchangeTs: tick.exchangeTs,
+      receivedTs: tick.receivedTs
     });
-    await this.eventBus.expire(key, 10);
+    await this.eventBus.expire(key, this.tickTtlSeconds);
 
     // Publish event
     await this.eventBus.publish('tick:update', tick.instrument, tick);
@@ -131,7 +157,9 @@ class EventNormalizer {
       totalPeOi: chain.totalPeOi,
       spotLtp: chain.spotLtp,
       expiry: chain.expiry,
-      timestamp: chain.timestamp
+      timestamp: chain.timestamp,
+      exchangeTs: chain.exchangeTs,
+      receivedTs: chain.receivedTs
     };
 
     for (const s of chain.strikes) {
@@ -140,7 +168,9 @@ class EventNormalizer {
     }
 
     await this.eventBus.hset(key, fields);
-    await this.eventBus.expire(key, 30);
+    // Retention and freshness are different concerns. Keep enough history for
+    // the slowest supported poll tier; consumers must inspect exchangeTs.
+    await this.eventBus.expire(key, this.chainTtlSeconds);
 
     // Publish event
     await this.eventBus.publish('oi:update', chain.instrument, chain);

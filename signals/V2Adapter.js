@@ -41,6 +41,9 @@ class V2Adapter {
     this.minTriggerRR = (config && config.v2 && config.v2.minTriggerRR) || 1.8;
     this.chains = new Map();         // instrument -> latest chain (live premiums for the trigger guard)
     this.rrBlockLogged = new Set();  // hypothesis ids whose R:R block was already logged
+    this.entryVeto = new Map();      // instrument -> current external safety veto
+    this.hydrated = new Set();       // instruments whose open state was restored
+    this.statePrefix = `${(config && config.redis && config.redis.keyPrefix) || 'pta:'}v2:open:`;
 
     // Instrument classes (INDEX | STOCK | MCX) + per-class engine overrides.
     // signalMode 'shadow' = full lifecycle + outcomes recorded, but never a
@@ -103,6 +106,7 @@ class V2Adapter {
   // "signal" this way.)
   allowTrigger(h) {
     try {
+      if (this.entryVeto.get(h.instrument)) return false;
       // MCX event stand-down (design §2.2): never TRIGGER a fresh entry into
       // a scheduled EIA release — writers get steamrolled by US data, and so
       // would we. Setups keep evaluating; only the entry is blocked.
@@ -119,7 +123,7 @@ class V2Adapter {
 
       const chain = this.chains.get(h.instrument);
       const pin = this.pinnedStrikes.get(h.id);
-      if (!chain || !pin || !(pin.targetPremium > 0)) return true; // can't validate — don't block on data gaps
+      if (!chain || !pin || !pin.valid || !(pin.targetPremium > 0) || !(pin.stopPremium > 0)) return false;
       const leg = this.findLeg(chain, pin.strike, h.direction);
 
       // Stock-option liquidity gates (design §1.4): a far-OTM pin or a wide
@@ -135,8 +139,8 @@ class V2Adapter {
         }
       }
 
-      const prem = leg ? Number(leg.ltp) || 0 : 0;
-      if (!(prem > 0)) return true;
+      if (!leg || !(Number(leg.bid) > 0) || !(Number(leg.ask) > 0) || Number(leg.ask) < Number(leg.bid)) return false;
+      const prem = Number(leg.ask);
       const reward = pin.targetPremium - prem;
       const risk = prem - pin.stopPremium;
       const minRR = this.minTriggerRRFor(h.instrument);
@@ -148,7 +152,7 @@ class V2Adapter {
       }
       return ok;
     } catch {
-      return true;
+      return false;
     }
   }
 
@@ -156,15 +160,16 @@ class V2Adapter {
   // pins out of illiquid far-OTM strikes; spread cap 1.5% of mid keeps the
   // premium R:R honest after crossing the spread.
   static stockTriggerViable(pin, leg, maxSpreadPct = 0.015, minDelta = 0.35) {
+    if (!pin || !leg || !(Number(leg.bid) > 0) || !(Number(leg.ask) > 0) || Number(leg.ask) < Number(leg.bid)) {
+      return { ok: false, reason: 'missing executable bid/ask quote' };
+    }
     if (pin && Math.abs(pin.delta || 0) < minDelta) {
       return { ok: false, reason: `pinned |delta| ${Math.abs(pin.delta || 0).toFixed(2)} < ${minDelta}` };
     }
-    if (leg && leg.bid > 0 && leg.ask > 0) {
-      const mid = (leg.bid + leg.ask) / 2;
-      const spreadPct = mid > 0 ? (leg.ask - leg.bid) / mid : 0;
-      if (spreadPct > maxSpreadPct) {
-        return { ok: false, reason: `ATM spread ${(spreadPct * 100).toFixed(1)}% > ${maxSpreadPct * 100}% of premium` };
-      }
+    const mid = (leg.bid + leg.ask) / 2;
+    const spreadPct = mid > 0 ? (leg.ask - leg.bid) / mid : 0;
+    if (spreadPct > maxSpreadPct) {
+      return { ok: false, reason: `ATM spread ${(spreadPct * 100).toFixed(1)}% > ${maxSpreadPct * 100}% of premium` };
     }
     return { ok: true };
   }
@@ -173,20 +178,21 @@ class V2Adapter {
     try {
       if (!chain || !Array.isArray(chain.strikes) || chain.strikes.length === 0) return;
       this.chains.set(chain.instrument, chain);
+      await this.hydrateOpenState(chain.instrument);
 
       // Stock pre-engine vetoes: in MWPL ban or earnings blackout, no setups
       // form at all (ΔOI reads are mechanically distorted / IV baselines are
       // event-poisoned). Chain archiving happens upstream and continues.
       if (this.classOf(chain.instrument) === 'STOCK') {
         const veto = await this.guards.vetoReason(chain.instrument);
+        if (veto) this.entryVeto.set(chain.instrument, veto);
+        else this.entryVeto.delete(chain.instrument);
         if (veto) {
           const day = StockGuards.istDay();
           if (this.vetoLogged.get(chain.instrument) !== `${veto}|${day}`) {
             this.vetoLogged.set(chain.instrument, `${veto}|${day}`);
             console.warn(`V2 ${chain.instrument}: vetoed all day (${veto})`);
           }
-          this.setups.set(chain.instrument, []);
-          return;
         }
       }
 
@@ -214,9 +220,12 @@ class V2Adapter {
 
       // Track entry/levels for outcome accounting
       for (const h of result.hypotheses) {
+        const pin = this.pinnedStrikes.get(h.id);
         this.lastKnown.set(h.id, {
           entry: h.entryRef, stop: h.structuralStop, target: h.structuralTarget,
-          direction: h.direction, archetype: h.archetype, triggeredAt: h.triggeredAt
+          direction: h.direction, archetype: h.archetype, triggeredAt: h.triggeredAt,
+          strike: pin && pin.strike,
+          entryPremium: pin && pin.entryPremium
         });
       }
 
@@ -248,8 +257,45 @@ class V2Adapter {
         }
         if (TERMINAL.has(t.to)) await this.persistOutcome(t, chain);
       }
+      await this.persistOpenState(chain.instrument);
     } catch (err) {
       console.error(`V2Adapter ${chain && chain.instrument}:`, err.message);
+    }
+  }
+
+  async hydrateOpenState(instrument) {
+    if (this.hydrated.has(instrument)) return;
+    this.hydrated.add(instrument);
+    try {
+      const raw = await this.eventBus.client.get(`${this.statePrefix}${encodeURIComponent(instrument)}`);
+      if (!raw) return;
+      const state = JSON.parse(raw);
+      this.engineFor(instrument).restoreOpenState(state.engine);
+      for (const [id, pin] of state.pins || []) this.pinnedStrikes.set(id, pin);
+      for (const [id, known] of state.lastKnown || []) this.lastKnown.set(id, known);
+      if (this.engineFor(instrument).hasOpenPositions()) console.warn(`V2 ${instrument}: restored open trade state`);
+    } catch (err) {
+      console.error(`V2 ${instrument}: open-state restore failed:`, err.message);
+    }
+  }
+
+  async persistOpenState(instrument) {
+    try {
+      const engineState = this.engineFor(instrument).exportOpenState();
+      const ids = new Set(engineState.hypotheses.map((h) => h.id));
+      const key = `${this.statePrefix}${encodeURIComponent(instrument)}`;
+      if (ids.size === 0) {
+        await this.eventBus.client.del(key);
+        return;
+      }
+      const state = {
+        engine: engineState,
+        pins: [...this.pinnedStrikes].filter(([id]) => ids.has(id)),
+        lastKnown: [...this.lastKnown].filter(([id]) => ids.has(id))
+      };
+      await this.eventBus.client.set(key, JSON.stringify(state));
+    } catch (err) {
+      console.error(`V2 ${instrument}: open-state persist failed:`, err.message);
     }
   }
 
@@ -426,7 +472,14 @@ class V2Adapter {
       const s = sorted[idx];
       if (!s) return null;
       const leg = direction === 'CE' ? s.ce : s.pe;
-      return { strike: s.strike, label, premium: leg ? Number(leg.ltp) || 0 : 0, delta: leg ? Number(leg.delta) || 0 : 0, oi: leg ? Number(leg.oi) || 0 : 0 };
+      return {
+        strike: s.strike, label,
+        premium: leg ? Number(leg.ltp) || 0 : 0,
+        bid: leg ? Number(leg.bid) || 0 : 0,
+        ask: leg ? Number(leg.ask) || 0 : 0,
+        delta: leg ? Number(leg.delta) || 0 : 0,
+        oi: leg ? Number(leg.oi) || 0 : 0
+      };
     };
 
     const order = direction === 'CE'
@@ -463,15 +516,16 @@ class V2Adapter {
     });
 
     const deltaSigned = h.direction === 'CE' ? Math.abs(chosen.delta || 0.5) : -Math.abs(chosen.delta || 0.5);
+    const entryPremium = chosen.ask > 0 ? chosen.ask : chosen.premium;
     const premiumATR = this.engine.premiumATRfromUnderlying(atr || 50, deltaSigned) || 10;
     const plan = this.engine.buildRiskPlan({
       direction: h.direction, entryUnderlying: h.entryRef,
       structuralStop: ex.stop.price, structuralTarget: ex.target.price,
-      optionPremium: chosen.premium, deltaSigned, gamma: 0, premiumATR
+      optionPremium: entryPremium, deltaSigned, gamma: 0, premiumATR
     });
     pin = {
       strike: chosen.strike, label: chosen.label, delta: chosen.delta,
-      entryPremium: chosen.premium, stopPremium: plan.stopPremium, targetPremium: plan.targetPremium,
+      entryPremium, stopPremium: plan.stopPremium, targetPremium: plan.targetPremium,
       rr: plan.rr, valid: plan.valid, riskInPremiumATR: plan.riskInPremiumATR,
       stopUnderlying: ex.stop.price, targetUnderlying: ex.target.price,
       stopSource: ex.stop.source, targetSource: ex.target.source,
@@ -581,16 +635,26 @@ class V2Adapter {
     if (!lk) return;
     try {
       const exit = Number(chain.spotLtp) || 0;
-      const entry = lk.entry;
-      const pnl = lk.direction === 'CE' ? exit - entry : entry - exit;
+      const wasTriggered = Number.isFinite(lk.triggeredAt) && lk.triggeredAt > 0;
+      const entry = wasTriggered ? lk.entry : null;
+      const pnl = wasTriggered ? (lk.direction === 'CE' ? exit - entry : entry - exit) : null;
+      const exitLeg = lk.strike != null ? this.findLeg(chain, lk.strike, lk.direction) : null;
+      const exitPremium = wasTriggered && exitLeg && Number(exitLeg.bid) > 0
+        ? Number(exitLeg.bid)
+        : wasTriggered && exitLeg && Number(exitLeg.ltp) > 0 ? Number(exitLeg.ltp) : null;
+      const entryPremium = wasTriggered && Number(lk.entryPremium) > 0 ? Number(lk.entryPremium) : null;
+      const pnlPremium = entryPremium != null && exitPremium != null ? exitPremium - entryPremium : null;
       const duration = lk.triggeredAt ? t.ts - lk.triggeredAt : null;
       await this.db.query(
-        `INSERT INTO signal_outcomes (signal_id, outcome, entry_px, exit_px, pnl, duration_ms)
-         VALUES ($1,$2,$3,$4,$5,$6)
+        `INSERT INTO signal_outcomes
+           (signal_id, outcome, entry_px, exit_px, pnl, entry_premium, exit_premium, pnl_premium, duration_ms)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (signal_id) DO UPDATE SET
            outcome = EXCLUDED.outcome, exit_px = EXCLUDED.exit_px,
-           pnl = EXCLUDED.pnl, duration_ms = EXCLUDED.duration_ms`,
-        [t.id, t.to, entry, exit, pnl, duration]
+           pnl = EXCLUDED.pnl, entry_premium = EXCLUDED.entry_premium,
+           exit_premium = EXCLUDED.exit_premium, pnl_premium = EXCLUDED.pnl_premium,
+           duration_ms = EXCLUDED.duration_ms`,
+        [t.id, t.to, entry, wasTriggered ? exit : null, pnl, entryPremium, exitPremium, pnlPremium, duration]
       );
     } catch (err) {
       console.error('V2 persistOutcome:', err.message);

@@ -31,12 +31,13 @@ class ChainArchiver {
       await this.db.tx(async (client) => {
         const snap = await client.query(
           `INSERT INTO chain_snapshots
-             (symbol, ts, spot, fut, fut_vol, expiry, atm_strike, pcr, max_pain, total_ce_oi, total_pe_oi, inst_class)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             (symbol, ts, received_ts, spot, fut, fut_vol, expiry, atm_strike, pcr, max_pain, total_ce_oi, total_pe_oi, inst_class)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
            RETURNING id`,
           [
             chain.instrument,
             new Date(chain.timestamp || Date.now()),
+            new Date(chain.receivedTs || Date.now()),
             num(chain.spotLtp),
             num(chain.fut),
             int(chain.futVolume),
@@ -51,14 +52,14 @@ class ChainArchiver {
         );
         const snapshotId = snap.rows[0].id;
 
-        // One multi-row insert for all strikes (12 columns each)
-        const COLS = 12;
+        // One multi-row insert for all strikes (16 columns each)
+        const COLS = 16;
         const placeholders = [];
         const params = [];
         chain.strikes.forEach((s, i) => {
           const o = i * COLS;
           placeholders.push(
-            `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6},$${o + 7},$${o + 8},$${o + 9},$${o + 10},$${o + 11},$${o + 12})`
+            `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6},$${o + 7},$${o + 8},$${o + 9},$${o + 10},$${o + 11},$${o + 12},$${o + 13},$${o + 14},$${o + 15},$${o + 16})`
           );
           const ce = s.ce || {};
           const pe = s.pe || {};
@@ -67,6 +68,7 @@ class ChainArchiver {
             int(ce.oi), int(pe.oi),
             int(ce.volume), int(pe.volume),
             num(ce.ltp), num(pe.ltp),
+            num(ce.bid), num(ce.ask), num(pe.bid), num(pe.ask),
             num(ce.iv), num(pe.iv),
             num(ce.delta), num(pe.delta)
           );
@@ -75,7 +77,8 @@ class ChainArchiver {
         await client.query(
           `INSERT INTO chain_strikes
              (snapshot_id, strike, ce_oi, pe_oi, ce_vol, pe_vol,
-              ce_ltp, pe_ltp, ce_iv, pe_iv, ce_delta, pe_delta)
+              ce_ltp, pe_ltp, ce_bid, ce_ask, pe_bid, pe_ask,
+              ce_iv, pe_iv, ce_delta, pe_delta)
            VALUES ${placeholders.join(',')}`,
           params
         );

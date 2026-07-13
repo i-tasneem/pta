@@ -66,6 +66,13 @@ export interface SnapshotResult {
   transitions: Transition[];
 }
 
+export interface OpenEngineState {
+  version: 1;
+  instrument: string;
+  lastTs: number;
+  hypotheses: Hypothesis[];
+}
+
 export interface LifecycleOptions {
   tracker?: TrackerOptions;
   regime?: RegimeOptions;
@@ -183,6 +190,31 @@ export class SetupEngine {
       if (Number.isFinite(targetUnderlying) && targetUnderlying > 0) h.structuralTarget = targetUnderlying;
       return;
     }
+  }
+
+  hasOpenPositions(): boolean {
+    return [...this.active.values()].some((h) => h.stage === 'TRIGGERED' || h.stage === 'ACTIVE');
+  }
+
+  exportOpenState(): OpenEngineState {
+    const hypotheses = [...this.active.values()]
+      .filter((h) => h.stage === 'TRIGGERED' || h.stage === 'ACTIVE')
+      .map((h) => ({ ...h, reasons: [...h.reasons], evidence: [...h.evidence], scoreHistory: [...h.scoreHistory] }));
+    return { version: 1, instrument: this.instrument, lastTs: this.lastTs, hypotheses };
+  }
+
+  restoreOpenState(state: OpenEngineState): void {
+    if (!state || state.version !== 1 || state.instrument !== this.instrument || !Array.isArray(state.hypotheses)) return;
+    for (const h of state.hypotheses) {
+      if (!h || h.instrument !== this.instrument || (h.stage !== 'TRIGGERED' && h.stage !== 'ACTIVE')) continue;
+      this.active.set(this.key(h.archetype, h.direction), {
+        ...h,
+        reasons: [...(h.reasons || [])],
+        evidence: [...(h.evidence || [])],
+        scoreHistory: [...(h.scoreHistory || [])]
+      });
+    }
+    if (Number.isFinite(state.lastTs) && state.lastTs > 0) this.lastTs = state.lastTs;
   }
 
   // --- internals ---
@@ -326,8 +358,11 @@ export class SetupEngine {
 
   // Hard invalidations applicable at any pre-terminal stage.
   private invalidate(h: Hypothesis, snap: ChainSnapshot, regime: RegimeResult, stale: boolean): boolean {
-    if (stale) { h.stage = 'INVALIDATED'; return true; }
-    if (regime.regime === 'EVENT_CHAOS') { h.stage = 'INVALIDATED'; return true; }
+    const open = h.stage === 'TRIGGERED' || h.stage === 'ACTIVE';
+    // Data gaps and event chaos veto entries. They cannot manufacture a flat
+    // position after entry; open risk remains managed until a real exit.
+    if (!open && stale) { h.stage = 'INVALIDATED'; return true; }
+    if (!open && regime.regime === 'EVENT_CHAOS') { h.stage = 'INVALIDATED'; return true; }
     if (snap.ts - h.createdAt > this.o.maxAgeMs && h.stage !== 'TRIGGERED' && h.stage !== 'ACTIVE') {
       h.stage = 'EXPIRED'; return true;
     }

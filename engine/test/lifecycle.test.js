@@ -87,3 +87,26 @@ test('transitions carry reasons for explainability', () => {
   }
   assert.ok(withReasons, 'transitions should include reasons + thesis');
 });
+
+test('restored open trade survives a stale gap and remains managed', () => {
+  const eng = new SetupEngine('NIFTY', { staleMs: 90000 });
+  eng.restoreOpenState({
+    version: 1,
+    instrument: 'NIFTY',
+    lastTs: 1000,
+    hypotheses: [{
+      id: 'restored-1', instrument: 'NIFTY', archetype: 'WALL_CAPITULATION_BREAK',
+      direction: 'CE', stage: 'ACTIVE', score: 70, reasons: [], evidence: [],
+      structuralStop: 22000, structuralTarget: 24000, entryRef: 23000,
+      thesis: 'restored open risk', createdAt: 1, updatedAt: 1000,
+      triggeredAt: 500, scoreHistory: [70], missCount: 0, holds: 3, stopViolations: 0
+    }]
+  });
+  assert.strictEqual(eng.hasOpenPositions(), true);
+  const snap = chainAt(0);
+  snap.ts = 500000;
+  snap.spot = 23100;
+  const result = eng.onSnapshot(snap, 0, 0);
+  assert.ok(result.hypotheses.some((h) => h.id === 'restored-1' && h.stage === 'ACTIVE'));
+  assert.ok(!result.transitions.some((t) => t.id === 'restored-1' && t.to === 'INVALIDATED'));
+});

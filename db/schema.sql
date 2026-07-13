@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS chain_snapshots (
   id            BIGSERIAL PRIMARY KEY,
   symbol        TEXT        NOT NULL,
   ts            TIMESTAMPTZ NOT NULL,
+  received_ts   TIMESTAMPTZ,
   spot          DOUBLE PRECISION,
   fut           DOUBLE PRECISION,
   fut_vol       BIGINT,
@@ -36,6 +37,10 @@ CREATE TABLE IF NOT EXISTS chain_strikes (
   pe_vol        BIGINT,
   ce_ltp        DOUBLE PRECISION,
   pe_ltp        DOUBLE PRECISION,
+  ce_bid        DOUBLE PRECISION,
+  ce_ask        DOUBLE PRECISION,
+  pe_bid        DOUBLE PRECISION,
+  pe_ask        DOUBLE PRECISION,
   ce_iv         DOUBLE PRECISION,
   pe_iv         DOUBLE PRECISION,
   ce_delta      DOUBLE PRECISION,
@@ -78,6 +83,11 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS shadow BOOLEAN NOT NULL DEFAULT fal
 -- Instrument class on snapshots so archive rows are self-describing
 -- (INDEX | STOCK | MCX; NULL on pre-Phase-1 rows = INDEX).
 ALTER TABLE chain_snapshots ADD COLUMN IF NOT EXISTS inst_class TEXT;
+ALTER TABLE chain_snapshots ADD COLUMN IF NOT EXISTS received_ts TIMESTAMPTZ;
+ALTER TABLE chain_strikes ADD COLUMN IF NOT EXISTS ce_bid DOUBLE PRECISION;
+ALTER TABLE chain_strikes ADD COLUMN IF NOT EXISTS ce_ask DOUBLE PRECISION;
+ALTER TABLE chain_strikes ADD COLUMN IF NOT EXISTS pe_bid DOUBLE PRECISION;
+ALTER TABLE chain_strikes ADD COLUMN IF NOT EXISTS pe_ask DOUBLE PRECISION;
 
 -- Earnings blackout feed (design §1.4 gate 2): manually maintained via
 -- scripts/add-earnings.js until an NSE corporate-calendar fetch exists.
@@ -95,11 +105,16 @@ CREATE TABLE IF NOT EXISTS signal_outcomes (
   exit_px       DOUBLE PRECISION,
   pnl           DOUBLE PRECISION,           -- underlying-space
   pnl_premium   DOUBLE PRECISION,           -- option-premium-space
+  entry_premium DOUBLE PRECISION,
+  exit_premium  DOUBLE PRECISION,
   mae           DOUBLE PRECISION,           -- max adverse excursion
   mfe           DOUBLE PRECISION,           -- max favorable excursion
   duration_ms   BIGINT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS entry_premium DOUBLE PRECISION;
+ALTER TABLE signal_outcomes ADD COLUMN IF NOT EXISTS exit_premium DOUBLE PRECISION;
 
 -- Rolled up nightly by the learning engine; drives data-driven confidence.
 CREATE TABLE IF NOT EXISTS strategy_performance (
